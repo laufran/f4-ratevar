@@ -1,0 +1,647 @@
+---
+title: "summarizef4"
+output: html_document
+date: "2023-10-19"
+---
+
+```{r}
+#| code-fold: true
+library("admixtools")
+library("stringr")
+suppressWarnings(library(dplyr))
+library("readr")
+library("ggplot2")
+library("collections")
+library("rlang")
+library("cowplot")
+library("JuliaCall")
+library("colorblindr")
+julia_command('Pkg.activate(".")')
+julia_command('include("scripts/simulatedata.jl")')
+suppressWarnings(library(magrittr))
+```
+
+```{julia}
+#| code-fold: true
+# need to include scripts in julia if I'm running julia cells
+using Pkg; Pkg.activate(".")
+using CSV, DataFrames, StatsBase
+using PhyloNetworks, PhyloPlots
+using RCall
+R"library(admixtools)"
+include("est_f4_nets.jl")
+include("miscfxns.jl")
+```
+
+Code for analyzing statistics from f4 and `find_graphs`.
+
+# Concat individual f4 results from each rep
+```{julia}
+#| eval: false
+# this should be only run once
+function summarize_f4_d(output_dir::AbstractString)
+      # initialize concat_dstat file
+      concat_f4_d = DataFrame(pop1= String[], pop2= String[], pop3= String[], pop4= String[], 
+                    f4= Float64[], f4_se= Float64[], f4_Z= Float64[], f4_P= Float64[],
+                    d=  Float64[], d_se=  Float64[], d_Z=  Float64[], d_P=  Float64[],
+                    irep= Int64[], lindist= Float64[], nind= Int[], 
+                    nbiallelic= Int[], mutrate= Float64[], net= String[])
+
+      paramset_dirs = filter(contains(r"\w+_\d.+"), readdir(output_dir))
+
+      for paramset in paramset_dirs
+        for (root, dirs, files) in walkdir("$output_dir/$paramset")
+          for repdir in dirs
+            if isfile("$output_dir/$(paramset)/$repdir/f4_d.csv")    
+              rep_df = DataFrame(CSV.File("$output_dir/$(paramset)/$repdir/f4_d.csv"))    
+              nbiallelic = parse(Int64, split(split(paramset, "_")[4], "-")[1])
+              insertcols!(rep_df, 6, :nbiallelic => nbiallelic) # insert as col
+              mutrate = parse(Float64, split(split(paramset, "_")[6], "-subrate")[1]) # parse mut rate      
+              insertcols!(rep_df, 7, :mutrate => mutrate) # insert as col      
+              net = split(paramset, "_")[1] # parse net name
+              insertcols!(rep_df, 8, :net => net) # insert as col
+              # append dstat df for each rep to concat_dstat df
+              concat_f4_d = vcat(concat_f4_d, rep_df)
+            else
+              error("Missing f4_d.csv for paramset $paramset rep $repdir")
+            end
+          end
+        end
+      end
+
+      # write concatenated dstat results to CSV in paramset dir
+      CSV.write("$(output_dir)/concat_f4_d.csv", concat_f4_d)
+end
+
+summarize_f4_d("output")
+```
+
+# Calculate f2 pair sums in order to filter taxon groupings
+
+Step 1: calculate avg f2 for each replicate with `apply_corr = FALSE`,
+because with 2+ individuals it would generate negative values for some
+f2 pairs (not with 1 individual).
+```{r}
+#| eval: false
+# this should be only run once
+# and run on franklin where all the output files are
+paramsets = list.dirs("output", full.names = FALSE, recursive = FALSE)
+
+for (dir in paramsets) {
+  reps = list.dirs(paste0("output/", dir), full.names = FALSE, recursive = FALSE)
+  for (rep in reps) {
+    rep_dir = paste0("output/", dir, "/", rep)
+    if (file.exists(paste0(rep_dir,"/avgf2.csv"))) {
+      next
+    }
+    prefix = paste0(rep_dir,"/seq")
+
+    #get last site number in seq.snp, add 1 more site
+    tmp = tail(read.csv(paste0(prefix,".snp"), sep="\t", header=FALSE), n=1)
+    sitenumber = strtoi(strsplit(tmp[[1]], split = " +")[[1]][4]) + 1
+    stopifnot(sitenumber > 100000001)
+
+    avgf2 = f2_from_geno(prefix, blgsize = sitenumber, adjust_pseudohaploid = TRUE, apply_corr = FALSE)
+
+    #get number of pops from seq.ind file
+    inds = read.csv(paste0(prefix,".ind"), sep="\t", header=FALSE)
+    npops = length(unique(inds$V3))
+    stopifnot(dim(avgf2) == c(npops, npops, 1))
+    #drop last dim with nsnps
+    avgf2 = drop(avgf2)
+    write.csv(avgf2, file=paste0(rep_dir,"/avgf2.csv"), quote=F)
+  }
+}
+```
+
+Step 2: For each choice of `pop1,pop2,pop3,pop4`, calculate the 3 sums of 
+f2 pairs, save them to a file.
+
+```{julia}
+#| eval: false
+# this should be only run once
+# and run on franklin where all the output files are
+paramset_dirs = sort!(filter!(contains(r"\w+_\d.+"), readdir("output")))
+
+for paramset in paramset_dirs
+  for (root, dirs, files) in walkdir("output/$paramset")
+    for repdir in dirs
+      f2df = CSV.read("output/$(paramset)/$repdir/avgf2.csv", DataFrame)
+      pops = f2df[:,1]
+      select!(f2df, Not(1))  # delete first column
+
+      # get 4 population (in order) for each f4 statistic.
+      # each set of 4 is repeated 3 times, each time with different order
+      f4_results = CSV.read("output/$(paramset)/$repdir/f4_d.csv", DataFrame)
+
+      sumf2pairs = DataFrame(
+          pop1=f4_results[!,:pop1], pop2=f4_results[!,:pop2],
+          pop3=f4_results[!,:pop3], pop4=f4_results[!,:pop4],
+          sumf2pairs12_34=zeros(Float64, nrow(f4_results)) # initialized to 0s
+      )
+
+      for row in eachrow(sumf2pairs)
+          idxs = indexin(row[[:pop1,:pop2,:pop3,:pop4]], pops)
+          row[:sumf2pairs12_34] = f2df[idxs[1],idxs[2]] + f2df[idxs[3],idxs[4]]
+      end
+      all(sumf2pairs[!,:sumf2pairs12_34] .> 0.0) ||
+          error("some 0 sum of pairs: still as initialized")
+
+      get_4taxa = (x1,x2,x3,x4) -> join(sort([x1,x2,x3,x4]),'-')
+      transform!(sumf2pairs, [:pop1,:pop2,:pop3,:pop4] => ByRow(get_4taxa) => :fourtaxa)
+      select!(sumf2pairs, :fourtaxa, Not(:fourtaxa)) # places 'fourtaxa' column first
+      sumf2pairs = transform(groupby(sumf2pairs, :fourtaxa),
+        :sumf2pairs12_34 => ordinalrank => :rank)
+      CSV.write("output/$(paramset)/$repdir/sumf2pairs.csv", sumf2pairs)
+    end
+  end
+end
+```
+
+```{julia}
+#| eval: false
+# this should be only run once
+# and run on franklin where all the output files are
+function summarize_sumf2pairs(output_dir::AbstractString)
+      # initialize concat_dstat file
+      concat_f2 = DataFrame(fourtaxa = String[], pop1= String[], pop2= String[], pop3= String[], 
+                    pop4= String[], sumf2pairs12_34= Float64[], rank= Int64[],
+                    irep= Int64[], lindist= Float64[], nind= Int64[], 
+                    nbiallelic= Int[], mutrate= Int64[], net= String[])
+
+      paramset_dirs = filter(contains(r"\w+_\d.+"), readdir(output_dir))
+
+      for paramset in paramset_dirs
+        for (root, dirs, files) in walkdir("$output_dir/$paramset")
+          for repdir in dirs
+            if isfile("$output_dir/$(paramset)/$repdir/sumf2pairs.csv")    
+              rep_df = DataFrame(CSV.File("$output_dir/$(paramset)/$repdir/sumf2pairs.csv"))    
+              net = split(paramset, "_")[1] #parse net name
+              nind = parse(Int64, split(split(paramset, "_")[2], "-")[1])
+              nbiallelic = parse(Int64, split(split(paramset, "_")[4], "-")[1])
+              lindist = parse(Float64, split(split(paramset, "_")[5], "-")[1])
+              mutrate = parse(Float64, split(split(paramset, "_")[6], "-subrate")[1])
+              insertcols!(rep_df, :irep => parse(Int64, repdir))
+              insertcols!(rep_df, :lindist => lindist)
+              insertcols!(rep_df, :nind => nind)
+              insertcols!(rep_df, :nbiallelic => nbiallelic)
+              insertcols!(rep_df, :mutrate => mutrate)
+              insertcols!(rep_df, :net => net)
+              # append dstat df for each rep to concat_dstat df
+              concat_f2 = vcat(concat_f2, rep_df)
+            else
+              error("Missing sumf2pairs.csv for paramset $paramset rep $repdir")
+            end
+          end
+        end
+      end
+
+      # write concatenated dstat results to CSV in paramset dir
+      CSV.write("$(output_dir)/concat_sumf2pairs.csv", concat_f2)
+end
+
+summarize_sumf2pairs("output")
+```
+
+# Load in data
+
+## Calculate h1/h2 values for every quartet on the true Fleg. net
+Given Flegontov network, calculate h1/h2 for every four-taxon/individual subnetwork possible in the network.
+```{julia}
+#| eval: false
+# this should be only run once
+calc_quartet_numhybrids(fleg, "input/fleg_h4_quartets.csv")
+calc_quartet_numhybrids(fleg_pruned, "input/fleg_h1_quartets.csv")
+```
+
+## Import data on h1/h2 quartet values for Fleg. net
+This csv contains the h1 and h2 values for every possible quartet from the Flegontov network.
+```{r}
+fleg_hyb        = read_csv("input/fleg_h4_quartets.csv")
+fleg_pruned_hyb = read_csv("input/fleg_h1_quartets.csv")
+```
+
+## Import f4/D and topgraphs csvs (concatenated from all reps/paramsets)
+```{r}
+#| eval: false
+# very time intensive, only run once
+# will reload filtered data in later
+concat_f4_d = read_csv("output/concat_f4_d.csv")
+concat_f2sums = read_csv("output/concat_sumf2pairs.csv")
+
+#nrows should be 210 per replicate
+  #12,000 reps * 210 = 2,520,000
+
+stopifnot(nrow(concat_f4_d) == 2520000)
+stopifnot(nrow(concat_f2sums) == 2520000)
+```
+
+## Merge f4 results w/ true hyb. info
+```{r}
+#| eval: false
+# very time intensive, only run once
+# will reload filtered data in later
+
+#insert column in results with fourtaxa string (to make comparable w/ true hyb results)
+f4results = concat_f4_d %>% rowwise() %>% mutate(fourtaxa = paste(sort(c(pop1, pop2, pop3, pop4)), collapse="-"))
+flegrows        = f4results %>% filter(net == "fleg")
+fleg_prunedrows = f4results %>% filter(net == "fleg-pruned")
+
+#join with true hyb. df based on fourtaxa col
+flegrows        = merge(x = flegrows, y = fleg_hyb, by = "fourtaxa")
+fleg_prunedrows = merge(x = fleg_prunedrows, y = fleg_pruned_hyb, by = "fourtaxa")
+
+#rbind dfs back together
+f4results = rbind(flegrows,fleg_prunedrows)
+stopifnot(nrow(f4results) == 2520000)
+
+#insert paramid based on lindist/nind/net/mutrate
+f4results = f4results %>% rowwise() %>% mutate(paramid = paste(c(nind, lindist, nbiallelic, mutrate, net), collapse="-"))
+concat_f2sums = concat_f2sums %>% rowwise() %>% mutate(paramid = paste(c(nind, lindist, nbiallelic, mutrate, net), collapse="-"))
+
+#insert unsorted fourtaxa col for merging & filtering (multiple testing correction)
+f4results = f4results %>% rowwise() %>% mutate(fourtaxa_unsorted = paste(c(pop1, pop2, pop3, pop4), collapse="-"))
+concat_f2sums = concat_f2sums %>% rowwise() %>% mutate(fourtaxa_unsorted = paste(c(pop1, pop2, pop3, pop4), collapse="-"))
+
+#f4results$paramid = as.factor(f4results$paramid)
+f4results$lindist = as.factor(f4results$lindist)
+f4results$nind = as.factor(f4results$nind)
+f4results$nbiallelic = as.factor(f4results$nbiallelic)
+f4results$mutrate = as.factor(f4results$mutrate)
+f4results$irep = as.numeric(f4results$irep)
+```
+
+## Check that f4 & D p-vals are the same
+```{r}
+#| eval: false
+ggplot(f4results, aes(x=f4_P, y= d_P)) + 
+    geom_point() + scale_x_log10() +
+    scale_y_log10()
+
+max(f4results$f4_P - f4results$d_P) #0 -> no difference
+
+isapprox = function(x,y, rtol=0.01){
+  maxval = max(abs(x), abs(y))
+  if (maxval == 0) return(TRUE);
+  return(abs(x-y) < rtol * maxval)
+}
+
+if(any(!isapprox(f4results$f4_P, f4results$d_P))) warning("Some quartets have different f4 & D p-values at relative tolerance 0.01")
+```
+
+Because the `d_P` and `f4_P` values are the same (or nearly so, falling within our tolerance), we'll just focus on `f4_P`.
+
+# Correct for multiple testing on f4
+
+## Examples showing 3 permutations per taxonset 
+
+For a given single paramid/rep combo and `fourtaxa` code, there should be three permutations
+of switching the order of pop 2,3,4 (with 1 remaining constant).
+
+### Example when h1 == h2 == 0
+
+When `h1 == h2 == 0`, two of the permutations tend to have a *very* small (significant) p-val, erroneously indicating there was hybridization. The permutation with a large p-val, correctly suggesting there was no hybridization, is the permutation where the correct sister pairs are grouped together as pop1&2 or pop3&4.
+```{r}
+#| eval: false
+# example when h1 == h2 == 0 
+# true sister pair: africa_east / africa_west
+f4results %>% filter(fourtaxa == "africa_east-africa_west-chimp-denisovan", paramid == "1-0-10000-1.25e-08-fleg", irep == 1) %>% View()
+```
+
+In this example above, when `africa_west` and `africa_east` are grouped as sister to one another (as pop1&2), their `f4_P = 0.8537`. The other permutations have `f4_P` vals of `0.0001`.
+
+### Example when h2 > 0
+
+Now, for an example where `h2 > 0` (see the Flegontov network figure panel D for an illustration), in this case `h1 == 3` and `h2 == 1`. The true sister pairing for this `fourtaxa` grouping is `non_africa_east` and `africa_east`. When they're placed as pop3&4, they are the permutation with the largest P.
+```{r}
+#| eval: false
+# example when h2 == 1
+# true sister pair: non_africa_east and africa_east
+f4results %>% filter(fourtaxa == "africa_east-africa_west-chimp-non_africa_east", paramid == "1-0-10000-1.25e-08-fleg", irep == 2) %>% View()
+```
+
+## Filter f4 results --> take fourtaxa permutation with smallest f2 sum
+```{r}
+#| eval: false
+# very time intensive, only run once
+# will reload filtered data in later
+
+#need to join f4results, based on fourtaxa
+f4_f2filt = merge(x = f4results, y = concat_f2sums, by = c("fourtaxa_unsorted", "paramid", "irep"))
+stopifnot(nrow(f4_f2filt) == 2520000)
+
+#remove dupe cols
+all(f4_f2filt$pop1.x == f4_f2filt$pop1.y)
+all(f4_f2filt$pop2.x == f4_f2filt$pop2.y)
+all(f4_f2filt$pop3.x == f4_f2filt$pop3.y)
+all(f4_f2filt$pop4.x == f4_f2filt$pop4.y)
+
+f4_f2filt = f4_f2filt %>% subset(select = -c(lindist.y, nind.y, 
+                mutrate.y, nbiallelic.y, net.y,
+                pop1.y, pop2.y, pop3.y, pop4.y, fourtaxa.y,
+                fourtaxa_unsorted))
+f4_f2filt = f4_f2filt %>% rename(pop1 = pop1.x, pop2 = pop2.x, pop3 = pop3.x,
+                pop4 = pop4.x, fourtaxa = fourtaxa.x, lindist = lindist.x, nind = nind.x, 
+                mutrate = mutrate.x, nbiallelic = nbiallelic.x, net = net.x)
+
+#check how many quartets have a different taxon ordering picked when picking largest P vs the BBAA count
+f4_f2filt %>% 
+  group_by(fourtaxa, irep, paramid) %>% 
+  arrange(desc(f4_P)) %>%
+  slice(1) %>%
+  ungroup() %>%
+  count(rank)
+```
+
+Of the quartets with largest p-vals, 791,401 also had
+the smallest f2 sums of the same `fourtaxa` group.
+
+# A tibble: 3 × 2
+   rank      n
+  <dbl>  <int>
+1     1 791401
+2     2      1
+3     3  48598
+
+5.8% (48,599 / 840,000) of quartets were incorrectly chosen
+if we filter quartets based on largest p-val.
+
+```{r}
+#| eval: false
+# very time intensive, only run once
+# will reload filtered data in later
+
+#insert col for ranking p-vals (1 = quartet with largest p-val, 3 = quartet with smallest p-val)
+f4_f2filt = f4_f2filt %>%
+  group_by(fourtaxa, irep, paramid) %>%
+  mutate(p_ranks = order(order(f4_P, decreasing=TRUE)))
+
+#look at an example to see if adding this col is correct, it appears so
+f4_f2filt %>%
+  filter(paramid == "1-0.3-fleg", irep == 18)  %>%
+  View()
+
+f4_f2filt %>% 
+  group_by(fourtaxa, irep, paramid) %>% 
+  filter(rank == 1) %>%  #get smallest f2 sum
+  ungroup() %>%
+  count(p_ranks)
+```
+
+So if we were to choose the quartets with smallest f2 sums,
+48,599 (same as above, which is good) would have p-vals that
+are not the largest in their `fourtaxa` grouping. 
+
+# A tibble: 3 × 2
+  p_ranks      n
+    <int>  <int>
+1       1 791401
+2       2  46528
+3       3   2071
+
+```{r}
+#| eval: false
+# see how much P vals differ by for the 14268 quartets
+  # for the quartets that differ, get the rows that either have
+  # smallest f2 sum (rank == 1) or largest p-val (p_ranks == 1)
+f4_f2filt_diff = f4_f2filt %>% 
+  group_by(paramid, irep, fourtaxa) %>%
+  filter(rank == 1 | p_ranks == 1) %>%
+  filter(n() > 1) %>%
+  mutate(pDiff = abs(f4_P - lag(f4_P))) %>%
+  arrange(pDiff, .by_group = TRUE)
+```
+
+```{r}
+#| eval: false
+# only run once
+
+# write filtered df based on f2 smallest sum chosen quartets to csv
+f4_f2filt = f4_f2filt %>% 
+  group_by(fourtaxa, irep, paramid) %>% 
+  filter(rank == 1)
+
+write.csv(f4_f2filt, file = "output/filtered_f4_d.csv")
+```
+
+# Calculate & plot type-1 error and power on f4
+
+## Calculate f4 type-1 error and power
+```{r}
+#fixit: add line to delete ...1 col
+f4_f2filt = read_csv("output/filtered_f4_d.csv")
+f4_f2filt$net = as.factor(f4_f2filt$net)
+f4_f2filt$lindist = as.factor(f4_f2filt$lindist)
+f4_f2filt$mutrate = as.factor(f4_f2filt$mutrate)
+f4_f2filt$nbiallelic = as.factor(f4_f2filt$nbiallelic)
+f4_f2filt$nind = as.factor(f4_f2filt$nind)
+f4_f2filt$h1 = as.factor(f4_f2filt$h1)
+f4_f2filt$h2 = as.factor(f4_f2filt$h2)
+f4_f2filt$paramid = as.factor(f4_f2filt$paramid)
+
+getprop = function(dat, test, ycolname=str_glue(test, "_P"), Hnum=2){
+ varsforgrouping = c("paramid", paste0("h",Hnum))
+ dat %>% group_by(across(all_of(varsforgrouping))) %>%
+  summarize(lindist = first(lindist),
+            nind = first(nind),
+            net = first(net),
+            mutrate = first(mutrate),
+            nbiallelic = first(nbiallelic),
+            nsim = n(),
+            test=test,
+            prop_below_005 = mean(!!sym(ycolname) < 0.05),
+            prop_below_005div3 = mean(!!sym(ycolname) < 0.05/3),
+            prop_below_001 = mean(!!sym(ycolname) < 0.01),
+            prop_below_001div3 = mean(!!sym(ycolname) < 0.01/3),
+            gamma = mean(g1, na.rm=TRUE),
+            .groups="drop")
+}
+
+prop_h1h2 = getprop(f4_f2filt, "f4", Hnum=1:2)
+prop_h2 = getprop(f4_f2filt, "f4", Hnum=2)
+prop_h1 = getprop(f4_f2filt, "f4", Hnum=1)
+```
+
+```{r}
+groupprop = function(dat){ #, H="H"){
+ dat %>%
+  mutate(sum_below_005     = prop_below_005 * nsim,
+         sum_below_005div3 = prop_below_005div3 * nsim,
+         sum_below_001     = prop_below_001 * nsim,
+         sum_below_001div3 = prop_below_001div3 * nsim,
+         sum_gamma         = gamma * nsim) %>%
+  summarize(lindist = first(lindist),
+            nind = first(nind),
+            net = first(net),
+            mutrate = first(mutrate),
+            nbiallelic = first(nbiallelic),
+            nsim = sum(nsim),
+            sum_below_005     = sum(sum_below_005),
+            sum_below_005div3 = sum (sum_below_005div3),
+            sum_below_001     = sum(sum_below_001),
+            sum_below_001div3 = sum (sum_below_001div3),
+            sum_gamma         = sum(sum_gamma),
+            .groups="keep") %>%
+  mutate(prop_below_005     = sum_below_005 / nsim,
+         prop_below_005div3 = sum_below_005div3 / nsim,
+         prop_below_001     = sum_below_001 / nsim,
+         prop_below_001div3 = sum_below_001div3 / nsim,
+         gamma              = sum_gamma / nsim) %>%
+  select(!starts_with("sum_"))
+}
+```
+
+## Plot f4 type-1 error
+
+First, let's compare h (h1) vs h' (h2). Let's see when looking at type-1 error 
+whether the two differ, and all the unique combinations of h1 & h2.
+
+```{r}
+#| eval: false
+# only run once
+# filter for h1 or h2 = 0
+prop_h1h2_type1 = prop_h1h2 %>% filter(h1 == 0 | h2 == 0)
+# get all unique combinations of h1 & h2:
+unique(prop_h1h2_type1[,c('h1','h2')])
+```
+
+We only have:
+# A tibble: 1 × 2
+  h1    h2   
+  <fct> <fct>
+1 0     0  
+
+Therefore, we have no quartets that have h1 != h2,
+or in other words h1 > 0 and h2 = 0.
+
+Let's confirm that the two dataframes when filtered are identical:
+
+```{r}
+#| eval: false
+# only run once
+h1_type1 = filter(prop_h1, h1=="0")
+h2_type1 = filter(prop_h2, h2=="0")
+# change column names so all.equal matches identically
+h1_type1 = h1_type1 %>% rename(h = h1)
+h2_type1 = h2_type1 %>% rename(h = h2)
+all.equal(h1_type1,h2_type1) #TRUE
+```
+
+Therefore, we can just plot h1, since it is the same as h2.
+
+```{r}
+# to edit and check palette / how it works colorblind see:
+  #https://coolors.co/ff006e-fc6722-f5b400-3a86ff-8b44ee
+colval = c('#FF006E', '#FC6722', '#F5B400', '#3A86FF','#8B44EE')
+fillval = c('#cccccc', '#FFFFFF')
+shapeval = c(21,23,24)
+nsites_labels = c("n = 10,000 SNPs", "n = 100,000 SNPs", "n = 10,000 SNPs", "n = 100,000 SNPs")
+mutrate_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07"))
+
+plot_type1error = function(dat, ylab, seed){
+  ggplot(dat, aes(y=prop_below_005, x=nbiallelic)) +
+  geom_point(aes(color=lindist, shape=nind, fill=net),
+             alpha=0.8, stroke=1, position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.85), size=1.5) +
+  scale_shape_manual(values=shapeval, labels=c("1","2","10")) +
+  scale_color_manual(values=colval, labels=c("0.0","0.15", "0.3", "0.5", "0.7")) +
+  #when you remove the label command
+  #ggplot automatically plots fleg as the filled dot
+  #and then unfilled as pruned -->
+  #thus order needs to be g4 then g1
+  scale_fill_manual(values=fillval, labels=c("g4","g1")) +
+  guides(color = guide_legend(order=2, title="rate variation\nacross lineages",
+              override.aes = list(color=colval, shape=21)),
+         shape = guide_legend(order=3, title="# of individuals",
+              override.aes = list(stroke=0.5)),
+         fill = guide_legend(order=4, title="network",
+              override.aes=list(fill=fillval,color='#000000',shape=21,stroke=1,size=2))) +
+  theme_minimal() +
+  scale_x_discrete(labels= nsites_labels, expand = expansion(add = c(0.5, 0.5))) +
+  scale_y_continuous(limits=c(0,0.25), breaks=c(0.0,0.05,0.1,0.15,0.2,0.25),
+                     expand = c(0, 0), minor_breaks=NULL, name=ylab) +
+  facet_wrap(~ mutrate, labeller = mutrate_labeller) +
+  labs(subtitle="mutation rate per gen.") +
+  theme(plot.subtitle=element_text(hjust=0.5), 
+        legend.position= "right",
+        panel.border = element_rect(linetype = "solid", fill = NA),
+        panel.grid.major.x = element_blank()) +
+  xlab("# biallelic sites") +
+  geom_vline(xintercept = seq(1.5, length(levels(dat$nbiallelic)) - 0.5, by=1),
+               color = "gray60", linetype = "dotted")
+}
+
+# to check colorblindness
+fig = plot_type1error(filter(prop_h1, h1=="0"), ylab="Type-1 error rate (h=0)", seed=27)
+cvd_grid(fig)
+
+plot_type1error(filter(prop_h1, h1=="0"), ylab="Type-1 error rate (h=0)", seed=27)
+ggsave("figures/power_type1error/fig_type1error_H1.pdf", height=5, width=9)
+```
+
+## Plot f4 power
+
+```{r}
+fillval = c('#c8c8c8', '#FFFFFF')
+power_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07", 
+                                `10000` = "n = 10,000 SNPs", `1e+05` = "n = 100,000 SNPs"))
+
+plot_power = function(dat, ylab, xlab, h, seed){
+  ggplot(dat, aes(y=prop_below_005, x=!!as.name(h))) +
+  geom_point(aes(color=lindist, fill=net, shape=nind),
+             alpha=0.8, stroke=1, position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.85), size=1.55) +
+  scale_shape_manual(values=shapeval, labels=c("1","2","10")) +
+  scale_color_manual(values=colval, labels=c("0.0","0.15", "0.3", "0.5", "0.7")) +
+  scale_fill_manual(values=fillval, labels=c("g4","g1")) +
+  guides(color = guide_legend(order=2, title="rate variation\nacross lineages\n", nrow=2,
+              override.aes = list(color=colval, shape=21)),
+         shape = guide_legend(order=3, title="# of individuals",
+              override.aes = list(stroke=0.5), nrow=2),
+         fill = guide_legend(order=4, title="network",
+              override.aes=list(fill=fillval,color='#000000',shape=21,stroke=1,size=3))) +
+  facet_grid(mutrate ~ nbiallelic, labeller = power_labeller) +
+  theme_minimal() + 
+  theme(legend.position="bottom",
+         panel.border = element_rect(linetype = "solid", fill = NA)) +
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.05,0.2,0.4, 0.6,0.8,1),
+                     expand = expansion(mult = c(0, .025)), minor_breaks=NULL, name=ylab) +
+  xlab(xlab)
+}
+
+plot_power(
+  filter(prop_h1, h1!="0") %>% group_by(paramid,h1) %>% groupprop,
+  ylab = "Power: when h>0", xlab = "number of hybridizations h", h="h1", seed=32)
+ggsave("figures/power_type1error/fig_power_H1.pdf", height=8, width=10)
+
+plot_power(
+  filter(prop_h2, h2!="0") %>% group_by(paramid,h2) %>% groupprop,
+  ylab = "Power: when h'>0", xlab = "number of hybridizations h'", h="h2", seed=32)
+ggsave("figures/power_type1error/fig_power_H2.pdf",  height=8, width=10)
+```
+
+## Get values/stats for results text
+
+Getting mean values for 10,000 SNPs 10 ind vs. 1 ind:
+```{r}
+h1_power = filter(prop_h1, h1!="0") %>% group_by(paramid,h1) %>% groupprop
+h1_power %>% 
+  filter(nbiallelic == 10000, h1 == 3 | h1 == 4, nind == 10) %>% 
+  ungroup() %>%
+  summarise(mean = mean(prop_below_005)) #0.235
+
+h1_power %>% 
+  filter(nbiallelic == 10000, h1 == 3 | h1 == 4, nind == 1) %>% 
+  ungroup() %>%
+  summarise(mean = mean(prop_below_005)) #0.10823
+
+h1_power %>% 
+  filter(nbiallelic == 100000, h1 == 1) %>% 
+  ungroup() %>%
+  summarise(mean = mean(prop_below_005)) #0.866
+
+h1_power %>% 
+  filter(nbiallelic == 100000, h1 == 4) %>% 
+  ungroup() %>%
+  summarise(mean = mean(prop_below_005)) #0.563
+```

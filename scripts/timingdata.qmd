@@ -1,0 +1,113 @@
+---
+title: "graphsearch_timedata"
+output: html_document
+date: "2025-1-7"
+---
+
+To get data on how much time was spent on searching for graphs,
+we can scrape the data off the time logs.
+
+For now, I'm just going to get timing data for one parameter set.
+
+## Collect time data from logs on the cluster
+
+Run this block on franklin01 `nobackup2/lefrankel/f4-ratevar`.
+
+```{julia}
+using CSV
+using DataFrames
+```
+
+```{julia}
+path = "output/fleg_10-indls_118000-genes_100000-biall_0.0-lindist_1.25e-8-subrate"
+
+#get all the rep dirs for the best case scenario
+reps = sort!(filter!(contains(r"\d.+"), readdir(path)))
+
+#initialize df
+time_df = DataFrame(irep=Int64[], irun=Int64[], h_search= Int[], time=Float64[])
+
+for rep in reps
+  rep_int = parse(Int, rep)
+  f = open("$path/$rep/graphsearch_log.txt", "r")
+    for line in readlines(f)
+      #check first that line contains "time:", ignore those that don't
+      if contains(line, "time:")
+        comma_split = split(line, ", ")
+        irun = parse(Int, split(comma_split[1], ": ")[2])
+        h_search = parse(Int, split(comma_split[2], ": ")[2])
+        time = parse(Float64, split(split(comma_split[4], ": ")[2], " ")[1])
+
+        push!(time_df, (rep_int, irun, h_search, time)) 
+
+      end
+    end
+  close(f)
+end
+
+CSV.write("output/fleg_10-indls_118000-genes_100000-biall_0.0-lindist_1.25e-8-subrate/timingdata.csv", time_df)
+```
+
+If I were to collect this data for all parameter sets / clusters,
+this script needs to be run on every cluster,  or I need to move all my scripts to 
+the same cluster (problematic, would need to append, as I might have duplicate logs 
+for the same rep on diff clusters).
+
+Would also need to add columns in dataframe with `net, indls, nbiallelic, lindist, subrate`.
+Would then need to combine all CSVs across clusters.
+
+But for now, I'm not doing that. I'm just focusing on timing data for one parameter set.
+
+## Analyze data locally
+
+```{r}
+library("readr")
+library("rlang")
+library("magrittr")
+library("dplyr")
+```
+
+### Sanity checks
+
+First let's check that there's 50 runs per irep/h_search combo.
+
+```{r}
+timedata = read_csv("output/timingdata.csv")
+
+summaryireps = timedata %>%
+  group_by(irep, h_search) %>%
+  summarize(irep     = first(irep),
+            h_search = first(h_search),
+            count    = n())
+
+summaryireps %>%
+  filter(count < 50)
+```
+
+That returns an empty table. Great! No irep + h_search combos had less than 50 iruns.
+
+And the `summaryireps` table has 300 rows, which is what we expect. (100 reps * 3 h_search values = 300 groups / rows)
+
+### Get summary of timing data
+
+```{r}
+summary_hsearch = timedata %>%
+  group_by(h_search) %>%
+  summarize(h_search = first(h_search),
+            count    = n(),
+            avgtime  = mean(time),
+            mintime  = min(time),
+            maxtime  = max(time),
+            sumtime  = sum(time))
+```
+
+> summary_hsearch
+ A tibble: 3 × 6
+  h_search count avgtime mintime maxtime sumtime
+     <dbl> <int>   <dbl>   <dbl>   <dbl>   <dbl>
+1        0  5000    2.47   0.779    5.47  12340.
+2        1  5000   11.8    1.49    69.2   59182.
+3        4  5000  122.     2.67   697.   611811.
+
+Time here is in *minutes!* The total amount of time across all three
+h_search vals is 12340+59182+611811 = 683,333 minutes.

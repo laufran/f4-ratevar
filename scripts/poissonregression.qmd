@@ -1,0 +1,220 @@
+---
+title: "Analysis of the hardwired distance to true G"
+subtitle: "(minimum across all top graphs for each data set)"
+output: html_document
+date: "2025-02-13"
+---
+
+Accuracy measure: hardwired distance d(true G, inferred G), minimized over
+all top graphs (inferred graphs).
+
+Question: Is d=d(trueG, inferredG) affected by rate variation across lineages?
+
+Method: use Poisson regression on d/2, accounting for
+- rate variation across lineages (5 values)
+  but also factors known to affect accuracy:
+- mutation rate
+- number of biallelic sites
+- number of individuals/population.
+- true graph complexity (g1 or g4)
+- search h (3 values: 0,1,2 or 0,1,4)
+
+Why d/2? d is an integer, but is always a multiple of 2, so assuming a Poisson
+distribution is obviously wrong. But d/2 is an integer that can take any
+value in 0, 1, 2, 3, etc., and for which a Poisson distribution could be a good
+assumption.
+
+```{r}
+#| warning: false
+#| echo: false
+#| output: false
+#| message: false
+library(dplyr)
+library(ggplot2)
+```
+
+# read and concatenate g1 & g4 data frames
+
+```{r}
+datg1 = read.csv("output/updatedresults/h1_byrep_filtered.csv") %>%
+  filter(h_search <= 2)
+nrow(datg1) # 18000 = 3 nind x 2 nSNPs x 2 mu x 5 sigma x 3 search_h x 100 reps
+datg4 = read.csv("output/updatedresults/h4_byrep_filtered.csv")
+nrow(datg4) # 18000 also
+stopifnot(all(names(datg1) == names(datg4)))
+dat = rbind(datg1, datg4) %>%
+    group_by(net, mutrate, nbiallelic, nind, lindist, h_search) %>%
+    select(min_nethw)
+dat %>% summarize(nreps=n(), .groups="drop") %>% select(nreps) %>% unique() # 100
+rm(datg1, datg4)
+```
+
+# scale (/2) and shift hardwired distances
+
+goal: response variable that meets a Poisson assumption
+
+```{r}
+dat = dat %>% mutate(d = as.integer(round(min_nethw/2)))
+```
+
+from this preliminary plot, we conclude that:
+- within each group (true network, hsearch, mu, nSNPs),
+  the values are nicely distributed: the Poisson distribution
+  seems valid
+- except that this Poisson distribution is shifted to some
+  minimum value if the search h is less than the true h:
+  because then, the estimated graph must necessarily differ
+  from the network network. This minimum seems to be:
+  * 1 if h_search=0 under g1
+  * 3 if h_search=1 under g4
+  * 6 if h_search=0 under g4
+
+```{r}
+dat %>% ggplot(aes(d)) +
+  facet_grid(net + h_search ~ mutrate + nbiallelic) +
+  geom_bar()
+```
+
+```{r}
+dat = dat %>% mutate(
+    mind = case_when(
+        net=="fleg" & h_search==0 ~ 6,
+        net=="fleg" & h_search==1 ~ 3,
+        net=="fleg-pruned" & h_search==0 ~ 1,
+        .default = 0),
+    d_shifted = d - mind
+    )
+```
+
+The shifted distances now look Poisson distributed within
+each group:
+
+```{r}
+dat %>% ggplot(aes(d_shifted)) +
+  facet_grid(net + h_search ~ mutrate + nbiallelic) +
+  geom_bar()
+```
+
+summarizing data frame with group means, on original distances:
+```{r}
+dat_mean = dat %>% select(d) %>%
+    summarize(
+        d_mean = mean(d),
+        d_se = sd(d)/sqrt(n())
+    )
+```
+
+rough plot of means:
+```{r}
+dat_mean %>%
+  ggplot(aes(y=d_mean, x=lindist, group=nind, color=nind)) +
+  facet_grid(net + h_search ~ mutrate + nbiallelic) +
+  geom_line()
+```
+
+# Poisson regression
+
+```{r}
+fit0 = glm(d_shifted ~ as.factor(net) +
+  as.factor(net):as.factor(h_search) + # h_search different for different nets
+  as.factor(mutrate) +
+  as.factor(nbiallelic) + as.factor(lindist),
+  data = dat, family = "poisson"
+  )
+```
+
+absolute model fit using the deviance goodness-of-fit:
+very good fit (p~1) because
+the deviance is < the residual df:
+
+```{r}
+deviance(fit0)   # 11970.95
+fit0$df.residual # 35988
+pchisq(deviance(fit0), df=fit0$df.residual, lower.tail=F)
+```
+
+using the Pearson residuals: still excellent fit
+```{r}
+lambdahat = fitted(fit0)
+fit0_resid = dat$d_shifted - lambdahat # same as resid(fit0, type="response")
+x2 = sum(fit0_resid^2/lambdahat)
+# same as: sum(resid(fit0, type="pearson")^2)
+x2 # 31273.72: still lower than residual df
+pchisq(x2, df = fit0$df.residual, lower.tail=F)
+```
+
+from the plots below, the assumption that
+var(Yhat give covariates) = E(Y)
+seems to hold based on Pearson residuals
+having a means close to 1:
+```{r}
+mean(resid(fit0, type="pearson")^2) # 0.8687145
+```
+
+If we did a quasi-Poisson regression, the dispersion
+parameter would be <1, so there is *no*
+evidence of overdispersion:
+
+```{r}
+x2 / fit0$df.residual # overdispersion: 0.8690042
+```
+
+conclusions:
+
+- there is no need to consider interactions (the fit is already adequate)
+- we can test the effect of the various predictors using a deviance test
+  (compare drop in deviance to a chi-square distribution)
+
+```{r}
+drop1(fit0, k=log(nrow(dat)), test="Chisq") # conservatively using n=36,000
+```
+
+output redacted to replace AIC by BIC, due to our choice of k.
+
+    Single term deletions
+                                       Df Deviance   BIC   LRT Pr(>Chi)    
+    <none>                                   11971 42378                   
+    as.factor(mutrate)                  1    12158 42555   187  < 2e-16 ***
+    as.factor(nbiallelic)               1    11977 42373     6  0.01517 *  
+    as.factor(lindist)                  4    12212 42577   241  < 2e-16 ***
+    as.factor(net):as.factor(h_search)  4    47693 78058 35722  < 2e-16 ***
+
+look at coefficients:
+
+```{r}
+summary(fit0)
+```
+
+output redacted for readability.
+Conclusion:
+- there is no evidence that sigma=0.15 decreases accuracy, in terms of
+  hardwired distance between the true and estimated network
+- the decrease in accuracy is statistically discernible,
+  compared to no rate variation, when sigma=0.3 or higher (p=0.00106 for
+  sigma=0.3, p<2e-16 for larger sigmas)
+
+Coefficients: (2 not defined on purpose: h_search nested in net)
+                                     Estimate Std. Error z value  Pr(>|z|)
+(Intercept)                          -6.59603    0.31670 -20.827  < 2e-16
+net:fleg-pruned                      -0.69314    0.54726  -1.267  0.20531
+mutrate:1.25e-07                      0.18354    0.01344  13.661  < 2e-16
+nbiallelic:1e+05                     -0.03249    0.01338  -2.428  0.01518
+lindist:0.15                          0.03687    0.02225   1.657  0.09748
+lindist:0.3                           0.07220    0.02206   3.273  0.00106
+lindist:0.5                           0.18266    0.02150   8.497  < 2e-16
+lindist:0.7                           0.27793    0.02105  13.205  < 2e-16
+net:fleg:as.factor(h_search)1         4.98018    0.31731  15.695  < 2e-16
+net:fleg-pruned:as.factor(h_search)1  4.55387    0.44900  10.142  < 2e-16
+net:fleg:as.factor(h_search)2              NA    good this coef was not included!
+net:fleg-pruned:as.factor(h_search)2  7.03209    0.44685  15.737  < 2e-16
+net:fleg:as.factor(h_search)4         7.29574    0.31633  23.064  < 2e-16
+net:fleg-pruned:as.factor(h_search)4       NA    good!
+
+(Dispersion parameter for poisson family taken to be 1)
+
+    Null deviance: 52826  on 35999  degrees of freedom
+Residual deviance: 11971  on 35988  degrees of freedom
+AIC: 42276
+
+Number of Fisher Scoring iterations: 8
+```
