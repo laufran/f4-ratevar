@@ -49,7 +49,7 @@ version 2.0.4 git commit a3d1d5b, downloaded as of 2024-5-20.
 devtools::install_github("uqrmaie1/admixtools")
 ```
 
-## updating
+### updating
 
 ```{r}
 library(remotes)
