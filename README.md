@@ -16,7 +16,7 @@ or a reduction in power?
 
 - julia packages: see `Project.toml`
 - seqgen for the simulation of sequences: Seq-Gen v1.3.4 downloaded from
-  [github](git@github.com:rambaut/Seq-Gen.git) at commit from 2019-08-29.
+  [github](git@github.com:rambaut/Seq-Gen.git) at [commit from 2019-08-29](https://github.com/rambaut/Seq-Gen/commit/e8660d73769297d25a88b40d5b828a6fce7784b5).
 - R packages:
   - [SiPhyNetwork](https://github.com/jjustison/SiPhyNetwork) version 1.1.0,
      see [notes/software_install.md](notes/software_install.md#siphynetwork---done-on-franklin)
