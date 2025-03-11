@@ -1007,7 +1007,7 @@ function simulate_fromnet_tovcf(net::HybridNetwork; nind::Int,
         if isfile("$rep_dir/seq.geno") && isfile("$rep_dir/seq.snp")
             println(io, "eig files already exist")
         else
-            run(`python3 scripts/vcf2eigenstrat.py -v $rep_dir/seq.vcf -o $rep_dir/seq -i $rep_dir/indmap`)
+            run(`python3 bin/vcf2eigenstrat.py -v $rep_dir/seq.vcf -o $rep_dir/seq -i $rep_dir/indmap`)
         end
 
         @show(rep_id)

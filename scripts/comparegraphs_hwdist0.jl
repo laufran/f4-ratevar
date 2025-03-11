@@ -48,7 +48,7 @@ function ndisplayed_intargetlist(candidatetrees::Vector{HybridNetwork}, trees2fi
 end
 
 # read the input graphs: at hardwired-distance 0 from the true G4
-df_52 = CSV.read("output/updatedresults/g4_hwmatches.csv", DataFrame)
+df_52 = CSV.read("output/g4_hwmatches.csv", DataFrame)
 df_52 = @chain df_52 begin
     @mutate(n = row_number())
 end

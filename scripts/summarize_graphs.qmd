@@ -7,8 +7,7 @@ date: "2023-10-19"
 fixits:
  - make comments for the visualization section
  - fix block quotes for results from R
- - `TRUE` graphs have `irun` value of 0- do I need to fix this?
-
+ 
 ```{r}
 #| code-fold: true
 library("admixtools")
@@ -682,7 +681,7 @@ write.csv(example, file="g4hsearch1_examplerep.csv", row.names = FALSE)
 ```
 
 ```{julia}
-examplerep = DataFrame(CSV.File("output/updatedresults/g4hsearch1_examplerep.csv"))
+examplerep = DataFrame(CSV.File("output/g4hsearch1_examplerep.csv"))
 newicks = examplerep[!, :newick]
 nets = readMultiTopology(newicks)
 
@@ -807,11 +806,11 @@ write.csv(g4_hwmatches, file = "g4_hwmatches.csv", row.names = FALSE)
 From here on out, this code is assumed to be run locally.
 
 ```{r}
-h1_byparamid = read.csv("output/updatedresults/h1_byparamid_filtered.csv")
-h4_byparamid = read.csv("output/updatedresults/h4_byparamid_filtered.csv")
-h1_byrep = read.csv("output/updatedresults/h1_byrep_filtered.csv")
-h4_byrep = read.csv("output/updatedresults/h4_byrep_filtered.csv")
-h4_hwmatches = read.csv("output/updatedresults/g4_hwmatches.csv")
+h1_byparamid = read.csv("output/h1_byparamid_filtered.csv")
+h4_byparamid = read.csv("output/h4_byparamid_filtered.csv")
+h1_byrep = read.csv("output/h1_byrep_filtered.csv")
+h4_byrep = read.csv("output/h4_byrep_filtered.csv")
+h4_hwmatches = read.csv("output/g4_hwmatches.csv")
 
 # cols to convert to factors
 factor_columns = c("lindist", "nind", "h_search", "mutrate", "nbiallelic", "net", "paramid")
@@ -854,11 +853,11 @@ g4match_newicks = h4_hwmatches %>%
   group_by(hash) %>%
   summarize(hash   = first(hash),
             newick = first(newick))
-write.csv(g4match_newicks, "output/updatedresults/g4match_newicks.csv", row.names = FALSE)
+write.csv(g4match_newicks, "output/g4match_newicks.csv", row.names = FALSE)
 ```
 
 ```{julia}
-g4match_newicks = DataFrame(CSV.File("output/updatedresults/g4match_newicks.csv"))
+g4match_newicks = DataFrame(CSV.File("output/g4match_newicks.csv"))
 newicks = g4match_newicks[!, :newick]
 nets = readMultiTopology(newicks)
 
@@ -1457,12 +1456,15 @@ type1_fromwr = wr_byirep  %>%
   mutate(type1 = 1 - prop_whsearch1)
 
 write.csv(type1_fromwr, "type1_fromwr.csv", row.names = FALSE)
+
+min(wr_byirep$ngraphs_h2_after) #1
+#there is always at least 1 graph accepted from h_search==2
 ```
 
 now let's do this locally:
 
 ```{r}
-type1_wr = read.csv("output/updatedresults/h1_type1_fromwr.csv")
+type1_wr = read.csv("output/h1_type1_fromwr.csv")
 type1_wr$lindist = as.factor(type1_wr$lindist)
 type1_wr$nind = as.factor(type1_wr$nind)
 type1_wr$mutrate = as.factor(type1_wr$mutrate)
@@ -1564,8 +1566,9 @@ type1_fromwr = wr_byirep  %>%
 write.csv(type1_fromwr, "type1_fromwr.csv", row.names = FALSE)
 ```
 
+locally:
 ```{r}
-g4_type1_wr = read.csv("output/updatedresults/h4_type1_fromwr.csv")
+g4_type1_wr = read.csv("output/h4_type1_fromwr.csv")
 g4_type1_wr$lindist = as.factor(g4_type1_wr$lindist)
 g4_type1_wr$nind = as.factor(g4_type1_wr$nind)
 g4_type1_wr$mutrate = as.factor(g4_type1_wr$mutrate)

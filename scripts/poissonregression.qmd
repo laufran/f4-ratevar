@@ -36,10 +36,10 @@ library(ggplot2)
 # read and concatenate g1 & g4 data frames
 
 ```{r}
-datg1 = read.csv("output/updatedresults/h1_byrep_filtered.csv") %>%
+datg1 = read.csv("output/h1_byrep_filtered.csv") %>%
   filter(h_search <= 2)
 nrow(datg1) # 18000 = 3 nind x 2 nSNPs x 2 mu x 5 sigma x 3 search_h x 100 reps
-datg4 = read.csv("output/updatedresults/h4_byrep_filtered.csv")
+datg4 = read.csv("output/h4_byrep_filtered.csv")
 nrow(datg4) # 18000 also
 stopifnot(all(names(datg1) == names(datg4)))
 dat = rbind(datg1, datg4) %>%
