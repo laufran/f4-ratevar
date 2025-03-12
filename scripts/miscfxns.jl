@@ -8,8 +8,12 @@ misc functions:
     - `calc_quartet_numhybrids`: given a network and a quartet of taxon/indl names, 
        determines the split if the 4-taxon network has a split of 2-vs-2 taxa,
        else calculate the number of hybridization events in the 4-taxon blob.
-    - `net_to_adjlist`:
-    - `edgelist_to_net`:
+    - `net_to_adjlist`: given a network in either either HybridNetwork format, 
+       string path to text file location, or string Newick format, `net_to_adjlist` 
+       returns a two column DataFrame with source/target node pairings
+       (for use in `admixtools`)
+    - `edgelist_to_net`: given an from a "list of edges" format graph (usually from 
+       `admixtools`, in a DataFrame/table), converts to a HybridNetwork format graph. 
 =#
 
 """
