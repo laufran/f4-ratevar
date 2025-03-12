@@ -1,5 +1,9 @@
 # pipeline to study lineage rate variation's effect on f4 stats
 
+Code to reproduce the simulation study in: Frankel & Ané (2025) "Low accuracy of complex admixture graph inference from f-statistics".
+
+Preprint available here: <https://www.biorxiv.org/content/10.1101/2025.03.07.642126v1>
+
 ## goal and model
 
 Goal: simulate sequence data (SNPs) under a network model reflecting
@@ -10,7 +14,6 @@ to answer these questions:
 2. How much lineage rate variation causes consequential type-1 error,
 or a reduction in power?
 3. How are the admixture graphs inferred from f4 results affected?
-
 
 ## dependencies
 
