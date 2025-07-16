@@ -4,17 +4,29 @@ using CSV
 using Combinatorics
 
 #=
-misc functions:
-    - `calc_quartet_numhybrids`: given a network and a quartet of taxon/indl names, 
-       determines the split if the 4-taxon network has a split of 2-vs-2 taxa,
-       else calculate the number of hybridization events in the 4-taxon blob.
-    - `net_to_adjlist`: given a network in either either HybridNetwork format, 
-       string path to text file location, or string Newick format, `net_to_adjlist` 
-       returns a two column DataFrame with source/target node pairings
-       (for use in `admixtools`)
-    - `edgelist_to_net`: given an from a "list of edges" format graph (usually from 
-       `admixtools`, in a DataFrame/table), converts to a HybridNetwork format graph. 
+miscellaneous functions, see their docstrings for details:
+
+    nodenumber2taxonname(net, number)
+    calc_quartet_numhybrids(net, csv_filename)
+    net_to_adjlist(net)
+    edgelist_to_net()
+
+and helper functions without docstrings:
+
+    quarnet_type(net, fourtaxa_vector)
+    numhybrids_in_4blob(quarnet)
+    quartetsplit(net, descendant_numbers, fourtaxonmames_vector)
 =#
+
+"""
+    nodenumber2taxonname(net, num)
+
+`node.name` for the node in `net` such that `node.number` is `num`.
+"""
+function nodenumber2taxonname(net, num)
+    i = findfirst(n -> n.number == num, net.node)
+    net.node[i].name
+end
 
 """
     calc_quartet_numhybrids(net::HybridNetwork, outputcsv::AbstractString)
@@ -47,8 +59,8 @@ possible in the network, calculate:
 Each quartet will form a row in output csv `outputcsv` (string that forms the 
 file name/output path). example format:
 
-taxonset,splitpair,h1,h2,gamma1,gamma2,gamma3
-t1-t3-t5-t6,t1-t5|t3-t6,13_24,2,1,0.279,NA,NA
+    taxonset,splitpair,h1,h2,gamma1,gamma2,gamma3
+    t1-t3-t5-t6,t1-t5|t3-t6,13_24,2,1,0.279,NA,NA
 
 # example
 
@@ -78,9 +90,8 @@ julia> fourtaxa_df[[1,4,8], 1] # to see full taxon names
 
 ```
 """
-
 function calc_quartet_numhybrids(net::HybridNetwork, outputcsv::AbstractString)
-    taxonlist = sort(tipLabels(net))
+    taxonlist = sort(tiplabels(net))
     ntaxa = length(taxonlist)
     ntaxa >= 4 || error("fewer than 4 taxa, 0 quarnet")
     nquartets = binomial(ntaxa, 4)
@@ -112,17 +123,17 @@ end
 function quarnet_type(net::HybridNetwork, fourtaxa)
     length(fourtaxa) == 4 || error("there aren't 4 tips: $fourtaxa")
     # check that all 4 taxa are in net
-    fourtaxa ⊆ tipLabels(net) ||  error("tips are not all in network")
+    fourtaxa ⊆ tiplabels(net) ||  error("tips are not all in network")
     # create 4-taxon subnetwork
     quarnet = deepcopy(net)
-    for tip in tipLabels(net)
+    for tip in tiplabels(net)
         tip ∈ fourtaxa && continue
         deleteleaf!(quarnet, tip, simplify=false)
     end
     # make it semidirected: remove above LSA and unroot
     deleteaboveLSA!(quarnet)
-    if length(quarnet.node[quarnet.root].edge) == 2
-      PhyloNetworks.fuseedgesat!(quarnet.root, quarnet)
+    if length(getroot(quarnet).edge) == 2
+      PhyloNetworks.fuseedgesat!(quarnet.rooti, quarnet)
     end
     removedegree2nodes!(quarnet) # flegontov has 1 degree-2 node for bottleneck
     # get h in blob before shrinking 3-cycles
@@ -134,13 +145,13 @@ function quarnet_type(net::HybridNetwork, fourtaxa)
         h2=0 # gammas unchanged: should all be missing
     end
     h1 ≥ h2 || error("""h1=$h1 < h2=$h2, 4 taxa: $fourtaxa
-        quarnet: $(writeTopology(quarnet, round=true))""")
+        quarnet: $(writenewick(quarnet, round=true))""")
     if h2 == 0
         all(ismissing.(gammas)) || error("h2=0 yet non-missing gammas")
         h1 == 0 || error("""
           h2=0 yet h1=$h1: the 4-blob disappeared after shrinking 2- and 3-cycles. wth?
           4 taxa: $fourtaxa
-          quarnet: $(writeTopology(quarnet, round=true))
+          quarnet: $(writenewick(quarnet, round=true))
           """)
     end
     # if h1=h2=0, quarnet is tree-like: find its split
@@ -154,7 +165,7 @@ end
 
 # network `quarnet` should have exactly 4 taxa, not checked
 function numhybrids_in_4blob(quarnet)
-    blobs = biconnectedComponents(quarnet) # default: includes trivial blobs
+    blobs = biconnectedcomponents(quarnet) # default: includes trivial blobs
     articulations = Set{Int}() # numbers of a blob's articulation nodes. re-used
     # a 4-blob has 4 articulation nodes, if the network is binary
     for blobedges in blobs # 1 blob = 1 vector of edges
@@ -163,14 +174,14 @@ function numhybrids_in_4blob(quarnet)
         for e in blobedges
             for node in e.node
                 node.number in articulations && continue
-                length(node.edge) == 3 || error("non-binary net at node $node.\nnet: $(writeTopology(quarnet, round=true))")
+                length(node.edge) == 3 || error("non-binary net at node $node.\nnet: $(writenewick(quarnet, round=true))")
                 if !(node.edge ⊆ blobedges)
                     push!(articulations, node.number)
                 end
             end
         end
         if length(articulations) == 4 # found 4-blob, which much be unique
-            gammas = sort!([e.gamma for e in blobedges if !e.isMajor]; rev= true)
+            gammas = sort!([e.gamma for e in blobedges if !e.ismajor]; rev= true)
             h = length(gammas)
             largest3gammas = Vector{Union{Missing, Float64}}(missing, 3)
             for i in eachindex(gammas)
@@ -192,7 +203,7 @@ function numhybrids_in_4blob(quarnet)
         end
     end
     @error("""no 4-blob (h=0) yet no 2-2 split.
-          quarnet: $(writeTopology(quarnet, round=true))""")
+          quarnet: $(writenewick(quarnet, round=true))""")
     return (0, nothing, emptygammas)
 end
 
@@ -212,23 +223,18 @@ function quartetsplit(net, descendant_numbers, tax)
     return split, split_code
 end
 
-"""
-`node.name` for the node in `net` such that `node.number` is `num`.
-"""
-function nodenumber2taxonname(net, num)
-    i = findfirst(n -> n.number == num, net.node)
-    net.node[i].name
-end
-
+# fixit: consider using the version of these conversion functions from here:
+# https://github.com/JuliaPhylo/PhyloUtilities/blob/admix/scripts/interop_admixtools.jl
 """
   net_to_adjlist(net::HybridNetwork)
+  net_to_adjlist(net_newickfilename::AbstractString)
 
 Given a `net` of either HybridNetwork format, string path to text file location,
 or string Newick format, `net_to_adjlist` returns a two column DataFrame
 with source/target node pairings.
 
 ```repl
-julia> net = readTopology("((t4:1.504,((t3:1.268,t1:1.268):1.057,#H8:0.0::1.424):1.179):1.16,(t2:1.325)#H8:1.34::1.576);")
+julia> net = readnewick("((t4:1.504,((t3:1.268,t1:1.268):1.057,#H8:0.0::1.424):1.179):1.16,(t2:1.325)#H8:1.34::1.576);")
 julia> adjlist = net_to_adjlist(net)
 source target
 1     i1     t3
@@ -243,28 +249,32 @@ source target
 ```
 """
 function net_to_adjlist(net::HybridNetwork)
-  adj_list = DataFrame(source = String[], target= String[]) # initialized as empty
-  PhyloNetworks.resetEdgeNumbers!(net)
-  PhyloNetworks.resetNodeNumbers!(net)
-  PhyloNetworks.nameinternalnodes!(net, "i") # "i" = prefix for new names
-  for n in net.node
-    snode_name = n.name # source node name
-    for c in getchildren(n) # will do nothing if leaf
-      tnode_name = c.name # name of child (target) node
-      push!(adj_list, [snode_name,tnode_name]) # push new row: source, target combination
+    adj_list = DataFrame(source = String[], target= String[]) # initialized as empty
+    PhyloNetworks.resetedgenumbers!(net)
+    PhyloNetworks.resetnodenumbers!(net)
+    PhyloNetworks.nameinternalnodes!(net, "i") # "i" = prefix for new names
+    for n in net.node
+        snode_name = n.name # source node name
+        for c in getchildren(n) # will do nothing if leaf
+            tnode_name = c.name # name of child (target) node
+            push!(adj_list, [snode_name,tnode_name]) # push new row
+        end
     end
-  end
-  return adj_list
+    return adj_list
 end
 
-net_to_adjlist(netpath::AbstractString) = net_to_adjlist(readTopology(netpath))
+net_to_adjlist(netpath::AbstractString) = net_to_adjlist(readnewick(netpath))
 
 """
-    edgelist_to_net(edgesource::AbstractVector, edgetarget::AbstractVector,
-                    edgetype::AbstractVector, edgeweight=missing,
-                    weighttol = -1e-8)
+    edgelist_to_net(
+        edgesource::AbstractVector,
+        edgetarget::AbstractVector,
+        edgetype::AbstractVector,
+        edgeweight=missing,
+        weighttol = -1e-8
+    )
 
-HybridNetwork object build from a list of edges, where each edge corresponds to a row.
+HybridNetwork object built from a list of edges, where each edge corresponds to a row.
 The source is the name of the parent node;
 the target is the name of the child node;
 the type is the string "edge" for tree edges, "admix" for hybrid edges.
@@ -274,22 +284,26 @@ hybrid edges. If not given, then all of them are given the default value of 0.5.
 # example
 
 ```repl
-julia> net0 = readTopology("((t4:1.504,((t3:1.268,t1:1.268):1.057,#H8:0.0::0.475):1.179):1.16,(t2:1.325)#H8:1.34::0.525);");
+julia> net0 = readnewick("((t4:1.504,((t3:1.268,t1:1.268):1.057,#H8:0.0::0.475):1.179):1.16,(t2:1.325)#H8:1.34::0.525);");
 
 julia> al = net_to_adjlist(net0); esource = al[!,:source]; etarget = al[!,:target];
 
 julia> etype = map(x -> (startswith(x, "H") ? "admix" : "edge"), etarget)
 
-julia> net1 = edgelist_to_net(esource, etarget, etype); writeTopology(net1) # edge weights default to 0.5
+julia> net1 = edgelist_to_net(esource, etarget, etype); writenewick(net1) # edge weights default to 0.5
 "((t4:0.5,((t3:0.5,t1:0.5)i1:0.5,(t2:0.5)#H1:0.0::0.5)i2:0.5)i3:0.5,#H1:0.0::0.5)i4;"
 
-julia> hardwiredClusterDistance(net0, net1, false) # false: as *un*rooted networks
+julia> hardwiredclusterdistance(net0, net1, false) # false: as *un*rooted networks
 0
 ```
 """
-function edgelist_to_net(edgesource::AbstractVector, edgetarget::AbstractVector,
-                         edgetype::AbstractVector, edgeweight::Union{AbstractVector,Missing}=missing,
-                         weighttol = -1e-8)
+function edgelist_to_net(
+    edgesource::AbstractVector,
+    edgetarget::AbstractVector,
+    edgetype::AbstractVector,
+    edgeweight::Union{AbstractVector,Missing}=missing,
+    weighttol = -1e-8
+)
   nedges = length(edgesource)
   length(edgetarget) == nedges || error("edge source & target vectors should have same length")
   length(edgetype) == nedges || error("edge type vector should have length $nedges")
@@ -334,7 +348,7 @@ function edgelist_to_net(edgesource::AbstractVector, edgetarget::AbstractVector,
     end
     sn.leaf = false # the source is not a leaf
     isrootnode[nodename2index[tnn]] = false # the target is not the root
-    push!(ee.node, tn) # child first, because isChild1 is true by default
+    push!(ee.node, tn) # child first, because ischild1 is true by default
     push!(ee.node, sn)
     push!(edgevec, ee)
     push!(sn.edge, ee)
@@ -362,16 +376,16 @@ function edgelist_to_net(edgesource::AbstractVector, edgetarget::AbstractVector,
     gammasum = sum(ee.gamma for ee in hybparents)
     for ee in hybparents
         ee.gamma /= gammasum
-        ee.isMajor = false
+        ee.ismajor = false
     end
     majorparentindex = argmax(ee.gamma for ee in hybparents)
-    hybparents[majorparentindex].isMajor = true
+    hybparents[majorparentindex].ismajor = true
   end
   # find the root
   sum(isrootnode) == 1 || error("found $(sum(isrootnode)) root(s)")
   rootindex = findfirst(isrootnode)
   # create the network
   net = PhyloNetworks.HybridNetwork(nodevec, edgevec)
-  net.root = rootindex
+  net.rooti = rootindex
   return net
 end

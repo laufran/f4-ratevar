@@ -31,9 +31,9 @@ include("est_f4_nets.jl")
 include("miscfxns.jl")
 ```
 
-As of 10-16-2024, all 120 parameter sets' graph searches ran across all the Franklins/Darwins 
+As of 10-16-2024, all 120 parameter sets' (for `g1` and `g4`) graph searches ran across all the Franklins/Darwins 
 have been compiled back to individual Franklin machines. As in, their `graphreps` folders with 
-at least 250 (more than 250 if `fleg-pruned` and `h_search` 3+ ran) individual graph search files
+at least 150 (more than 150 if `fleg-pruned` (g1) and `h_search` 3+ ran) individual graph search files
 were moved back to their `paramset` dirs. Relevant log files (`graphsearch_log.txt` for each rep)
 with information on seeds and elapsed time remain on the darwin machines they ran on.
 
@@ -78,7 +78,7 @@ concat_all = concat_all %>% rowwise() %>%
 write.csv(concat_all, file = "concat_all.csv", row.names = FALSE)
 ```
 
-# Analyze topgraphs results
+# Exploratory data analysis
 
 These blocks will still be run in an R session on `franklin00`:
 ```{r}
@@ -255,7 +255,7 @@ summary_hest_hsearch_fleg = concat_topgraphs %>%
 ```
 
 This is what `h_search` (what was searched for) vs `h_est` (the h of the estimated graph) 
-looks for estimated graphs (`truenet == FALSE`) when using the pruned Flegontov
+looks for estimated graphs (`truenet == FALSE`) when using `g1`
 graph (`net == "fleg-pruned"`):
 
 > summary_hest_hsearch_flegpruned
@@ -284,7 +284,7 @@ graph (`net == "fleg-pruned"`):
 16        4     4  4951480
 17        4     5      437
 
-and for the unpruned Flegontov (`net == "fleg"`): 
+and for `g4` (`net == "fleg"`): 
 
 > summary_hest_hsearch_fleg
  A tibble: 10 × 3
@@ -414,8 +414,6 @@ If there is more than 1 graph in a group, there are multiple occurences for that
 (could be 2+ that are not a `TRUE` / `FALSE` graph combo). Then we filter
 groups of 2+ graphs with both `TRUE` and `FALSE` graphs.
 
-fixit: ordering sections in doc!
-
 ```{r}
 concat_topgraphs %>% 
     filter(truenet == TRUE) %>% 
@@ -443,19 +441,6 @@ same, only one hash!
   <chr>                           
 1 0ba4c049b40b2cc83a8822676c1d33aa
 
-then hard code the hashes for the two true nets
-and filter accordingly
-
-```{r}
-groupgraphs_acrossruns_extra = groupgraphs_acrossruns %>% 
-    #create col ishashmatch
-    mutate(ishashmatch = case_when(
-            net == "fleg"        & hash == "b66401d14d13e41dfd92363767147547" ~ TRUE,
-            net == "fleg-pruned" & hash == "0ba4c049b40b2cc83a8822676c1d33aa" ~ TRUE,
-            .default = FALSE
-          ))
-```
-
 Let's double check if multiple graphs in the same `irun` get a hash match:
 
 ```{r}
@@ -474,125 +459,7 @@ net_matches %>%
 
 No, no multiple matches in a single irun.
 
-Let's see what the hw distance is like for net matches.
-
-```{r}
-hashmatches = groupgraphs_acrossruns_extra %>%
-  filter(ishashmatch == TRUE)
-
-hashmatches_hwdistnonzero = hashmatches %>%
-  filter(net_hwdist > 0)
-
-g1_hashmatches_hwdistnonzero = hashmatches_hwdistnonzero %>%
-  filter(net == "fleg-pruned")
-
-g4_hashmatches_hwdistnonzero = hashmatches_hwdistnonzero %>%
-  filter(net == "fleg")
-```
-
-To see matches by `irun` & `irep`:
-
-Let's first group by `paramid` + `irep` + `h_search` on our net_matches.
-First, we filter only for `FALSE` graphs. Then, let's see how many
-`irun`s have matches for the same combo (`nruns_matched`) and get
-their proportion over the total `irun`s (50). 
-
-```{r}
-matches_byirun = net_matches %>%
-  filter(truenet == FALSE) %>%
-  group_by(paramid, irep, h_search) %>%
-  summarize(
-    lindist = first(lindist),
-    nind = first(nind),
-    net = first(net),
-    mutrate = first(mutrate),
-    nbiallelic = first(nbiallelic),
-    nruns_matched = n_distinct(irun),
-    prop_nruns_matched = nruns_matched / 50,
-  )
-```
-
-Then, let's take that information and group just by `paramid` 
-and `h_search` to see how many `irep`s get matches, and 
-how many `irun`s per `irep` on average (+ max & min) get matches.
-
-```{r}
-matches_byparamset = matches_byirun %>%
-  group_by(paramid, h_search) %>%
-  summarize(
-    lindist = first(lindist),
-    nind = first(nind),
-    net = first(net),
-    mutrate = first(mutrate),
-    nbiallelic = first(nbiallelic),
-    nreps_matched = n_distinct(irep),
-    prop_nreps_matched = nreps_matched / 100,
-    mean_prop_nruns_matched = mean(prop_nruns_matched),
-    min_prop_nruns_matched = min(prop_nruns_matched),
-    max_prop_nruns_matched = max(prop_nruns_matched),
-  )
-
-write.csv(matches_byparamset, file = "matches_byparamset.csv", row.names = FALSE)
-```
-
-Now let's look at just the `fleg` scenario:
-
-```{r}
-#5 matches for the unpruned network (1 each in paramset)
-matches_byparamset %>%
-  filter(net == "fleg") %>%
-  subset(select = -c(paramid, net))
-```
-
-> matches_byparamset %>%
-  filter(net == "fleg") %>%
-  subset(select = -c(paramid, net))
- A tibble: 5 × 10
-  h_search lindist  nind     mutrate nbiallelic nreps_matched prop_nreps_matched
-     <int>   <dbl> <int>       <dbl>      <dbl>         <int>              <dbl>
-1        4     0      10     1.25e-8      10000             1               0.01
-2        4     0.3    10     1.25e-8     100000             1               0.01
-3        4     0.5    10     1.25e-7     100000             1               0.01
-4        4     0.5    10     1.25e-8     100000             1               0.01
-5        4     0       2     1.25e-8     100000             1               0.01
- ℹ 3 more variables: mean_prop_nruns_matched <dbl>,
-   min_prop_nruns_matched <dbl>, max_prop_nruns_matched <dbl>
-
-We have just 5 hash matches, with 1 rep (and 1 `irun`) for 5 different paramsets
-out of 60 full `fleg` paramsets.
-
-Now, for the `fleg-pruned` hash matches:
-
-```{r}
-matches_byparamset %>%
-  filter(net == "fleg-pruned") %>%
-  subset(select = -c(paramid, net))
-```
-
-All paramsets (60/60) for the pruned graph got the true graph:
-
-> matches_byparamset %>%
-  filter(net == "fleg-pruned") %>%
-  subset(select = -c(paramid, net))
- A tibble: 60 × 10
-   h_search lindist  nind    mutrate nbiallelic nreps_matched prop_nreps_matched
-      <int>   <dbl> <int>      <dbl>      <dbl>         <int>              <dbl>
- 1        1    0        1    1.25e-7      10000            97               0.97
- 2        1    0        1    1.25e-8      10000            97               0.97
- 3        1    0        1    1.25e-7     100000           100               1   
- 4        1    0        1    1.25e-8     100000           100               1   
- 5        1    0.15     1    1.25e-7      10000            96               0.96
- 6        1    0.15     1    1.25e-8      10000            95               0.95
- 7        1    0.15     1    1.25e-7     100000           100               1   
- 8        1    0.15     1    1.25e-8     100000           100               1   
- 9        1    0.3      1    1.25e-7      10000            97               0.97
-10        1    0.3      1    1.25e-8      10000            99               0.99
- ℹ 50 more rows
- ℹ 3 more variables: mean_prop_nruns_matched <dbl>,
-   min_prop_nruns_matched <dbl>, max_prop_nruns_matched <dbl>
- ℹ Use `print(n = ...)` to see more rows
-
-# Re-filter results across reps, not iruns
+# Filter out duplicate graphs, only keep graphs within 10 pts of best scoring within each replicate (across run)
 ```{r}
 groupgraphs_acrossruns = concat_topgraphs %>%
   filter(truenet == FALSE) %>%
@@ -641,95 +508,36 @@ summary_ngraphs = groupgraphs_acrossruns %>%
  ℹ 37,898 more rows
  ℹ Use `print(n = ...)` to see more rows
 
-# Dig into weird G4 h_search=1 many SNPs scenario
+## Add column `ishashmatch`
+
+Hard code the hashes for the two true nets (hashes obtained above) and filter accordingly:
 
 ```{r}
-test = graphs_filt %>%
-  filter(nbiallelic == 100000, net == "fleg", h_search == 1,
-         min_treehw == 2) %>%
-  #we want reps that have high tree dist
-  #and low ndisplayed
-  arrange(max_ndisplayed, desc(ngraphs)) #default is ascending
-
-head(
-  select(test, irep, paramid, min_treehw, max_ndisplayed, ngraphs)
-)
+groupgraphs_acrossruns_extra = groupgraphs_acrossruns %>% 
+    #create col ishashmatch
+    mutate(ishashmatch = case_when(
+            net == "fleg"        & hash == "b66401d14d13e41dfd92363767147547" ~ TRUE,
+            net == "fleg-pruned" & hash == "0ba4c049b40b2cc83a8822676c1d33aa" ~ TRUE,
+            .default = FALSE
+          ))
 ```
 
- A tibble: 6 × 5
- Groups:   irep, paramid [6]
-   irep paramid                    min_treehw max_ndisplayed ngraphs
-  <int> <chr>                           <int>          <int>   <int>
-1    85 10-0.7-1e+05-1.25e-07-fleg          2              0       5
-2    79 1-0.7-1e+05-1.25e-07-fleg           2              1      74
-3    60 2-0.7-1e+05-1.25e-08-fleg           2              1      37
-4    23 1-0.5-1e+05-1.25e-08-fleg           2              1      35
-5    57 1-0-1e+05-1.25e-07-fleg             2              1      30
-6    62 1-0.3-1e+05-1.25e-07-fleg           2              1      28
+## Look at hard-wired distances for net matches
 
-given this poke into results, let's focus on one of the later rows. (the first
-has a small sample and that would affect the probability of getting at least one
-graph that displays one of the major trees.)
+Let's see what the hw distance is like for net matches.
 
 ```{r}
-example = groupgraphs_acrossruns %>%
-  filter(paramid == "1-0-1e+05-1.25e-07-fleg", irep == 57, h_search == 1)
+hashmatches = groupgraphs_acrossruns_extra %>%
+  filter(ishashmatch == TRUE)
 
-mean(example$tree_hwdist) #2.266667
+hashmatches_hwdistnonzero = hashmatches %>%
+  filter(net_hwdist > 0)
 
-write.csv(example, file="g4hsearch1_examplerep.csv", row.names = FALSE)
-```
+g1_hashmatches_hwdistnonzero = hashmatches_hwdistnonzero %>%
+  filter(net == "fleg-pruned")
 
-```{julia}
-examplerep = DataFrame(CSV.File("output/g4hsearch1_examplerep.csv"))
-newicks = examplerep[!, :newick]
-nets = readMultiTopology(newicks)
-
-R"pdf"("fig_hsearch1-1.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[1]; showgamma=true);
-PhyloPlots.plot(nets[2]; showgamma=true);
-PhyloPlots.plot(nets[3]; showgamma=true);
-PhyloPlots.plot(nets[4]; showgamma=true);
-PhyloPlots.plot(nets[5]; showgamma=true);
-PhyloPlots.plot(nets[6]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_hsearch1-2.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[7]; showgamma=true);
-PhyloPlots.plot(nets[8]; showgamma=true);
-PhyloPlots.plot(nets[9]; showgamma=true);
-PhyloPlots.plot(nets[10]; showgamma=true);
-PhyloPlots.plot(nets[11]; showgamma=true);
-PhyloPlots.plot(nets[12]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_hsearch1-3.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[13]; showgamma=true);
-PhyloPlots.plot(nets[14]; showgamma=true);
-PhyloPlots.plot(nets[15]; showgamma=true);
-PhyloPlots.plot(nets[16]; showgamma=true);
-PhyloPlots.plot(nets[17]; showgamma=true);
-PhyloPlots.plot(nets[18]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_hsearch1-4.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[19]; showgamma=true);
-PhyloPlots.plot(nets[20]; showgamma=true);
-PhyloPlots.plot(nets[21]; showgamma=true);
-PhyloPlots.plot(nets[22]; showgamma=true);
-PhyloPlots.plot(nets[23]; showgamma=true);
-PhyloPlots.plot(nets[24]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_hsearch1-5.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[25]; showgamma=true);
-PhyloPlots.plot(nets[26]; showgamma=true);
-PhyloPlots.plot(nets[27]; showgamma=true);
-PhyloPlots.plot(nets[28]; showgamma=true);
-PhyloPlots.plot(nets[29]; showgamma=true);
-PhyloPlots.plot(nets[30]; showgamma=true);
-R"dev.off"()
+g4_hashmatches_hwdistnonzero = hashmatches_hwdistnonzero %>%
+  filter(net == "fleg")
 ```
 
 # Visualize results
@@ -790,10 +598,10 @@ write.csv(h4_byparamid, file="h4_byparamid_filtered.csv", row.names = FALSE)
 
 get stats on max amount of `ngraphs` per rep:
 ```{r}
-> max(graphs_filt$ngraphs) #16195
+max(graphs_filt$ngraphs) #16195
 ```
 
-debugging what's going on with `prop_netdist_eq_0` for g1:
+get graphs with hard-wired distance of 0 for `g4` (more inclusive than `ishashmatch == TRUE`):
 
 ```{r}
 g4_hwmatches = concat_topgraphs %>%
@@ -801,6 +609,8 @@ g4_hwmatches = concat_topgraphs %>%
 
 write.csv(g4_hwmatches, file = "g4_hwmatches.csv", row.names = FALSE)
 ```
+
+## Load in summary csvs locally
 
 *Note:*
 From here on out, this code is assumed to be run locally.
@@ -837,57 +647,6 @@ h1_byrep_completehsearch = h1_byrep %>%
   filter(h_search == 0 | h_search == 1 | h_search == 2)
 ```
 
-## Debugging hash matches vs. hw distance for g4
-
-Let's look at how many G4 matches we had based on net distance:
-
-```{r}
-nrow(h4_hwmatches) #52 matches
-length(unique(h4_hwmatches$hash)) #14 unique hashes across 52 matches
-```
-
-Let's get the a Newick string for each of the 14 unique hashes
-  (grab the first match's Newick)
-```{r}
-g4match_newicks = h4_hwmatches %>%
-  group_by(hash) %>%
-  summarize(hash   = first(hash),
-            newick = first(newick))
-write.csv(g4match_newicks, "output/g4match_newicks.csv", row.names = FALSE)
-```
-
-```{julia}
-g4match_newicks = DataFrame(CSV.File("output/g4match_newicks.csv"))
-newicks = g4match_newicks[!, :newick]
-nets = readMultiTopology(newicks)
-
-PhyloPlots.plot(nets[2])
-
-R"pdf"("fig_g4matches1.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[1]; showgamma=true);
-PhyloPlots.plot(nets[2]; showgamma=true);
-PhyloPlots.plot(nets[3]; showgamma=true);
-PhyloPlots.plot(nets[4]; showgamma=true);
-PhyloPlots.plot(nets[5]; showgamma=true);
-PhyloPlots.plot(nets[6]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_g4matches2.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[7]; showgamma=true);
-PhyloPlots.plot(nets[8]; showgamma=true);
-PhyloPlots.plot(nets[9]; showgamma=true);
-PhyloPlots.plot(nets[10]; showgamma=true);
-PhyloPlots.plot(nets[11]; showgamma=true);
-PhyloPlots.plot(nets[12]; showgamma=true);
-R"dev.off"()
-R"pdf"("fig_g4matches3.pdf", height=8.5, width=15)
-R"par"(mar=[.1,.1,.1,.1]); R"layout"([1 2; 3 4; 5 6]);
-PhyloPlots.plot(nets[13]; showgamma=true);
-PhyloPlots.plot(nets[14]; showgamma=true);
-R"dev.off"()
-```
-
 ## Define functions for visualization
 
 ```{r}
@@ -896,6 +655,7 @@ colval = c('#FF006E', '#FC6722', '#F5B400', '#3A86FF','#8B44EE')
 shapeval = c(21,23,24)
 fillval = c('#FFFFFF', '#c8c8c8')
 reversefill = c('#c8c8c8', '#FFFFFF')
+mutrate_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07"))
 power_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07", 
                                 `10000` = "n = 10,000 SNPs", `1e+05` = "n = 100,000 SNPs",
                                 `100000` = "n = 100,000 SNPs",
@@ -1013,6 +773,39 @@ plot_graphs_point_pct_bothnets = function(dat, yvar, xlab = "search h", ylab, xl
   xlab(xlab) +
   labs(subtitle = subtitle)
 }
+
+plot_accuracy_2panels = function(dat, yvar, xlab = "search h", ylab, xlabels= waiver(), seed){
+  ggplot(dat, aes(.data[["h_search"]], .data[[yvar]])) +
+  geom_point(aes(color=lindist, shape=nind, fill=net),
+             alpha=0.8, stroke=1, position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.85), size=1.5) +
+  scale_shape_manual(values=shapeval, labels=c("1","2","10")) +
+  scale_color_manual(values=colval, labels=c("0.0","0.15", "0.3", "0.5", "0.7")) +
+  #when you remove the label command
+  #ggplot automatically plots fleg as the filled dot
+  #and then unfilled as pruned -->
+  #thus order needs to be g4 then g1
+  scale_fill_manual(values=fillval, labels=c("g4","g1")) +
+  guides(color = guide_legend(order=2, title="rate variation\nacross lineages",
+              override.aes = list(color=colval, shape=21)),
+         shape = guide_legend(order=3, title="# of individuals",
+              override.aes = list(stroke=0.5)),
+         fill = guide_legend(order=4, title="network",
+              override.aes=list(fill=reversefill,color='#000000',shape=21,stroke=1,size=2))) +
+  theme_minimal() +
+  scale_x_discrete(labels= xlabels, expand = expansion(add = c(0.5, 0.5))) +
+  scale_y_continuous(labels = scales::percent)+
+  facet_wrap(~ mutrate, labeller = mutrate_labeller) +
+  labs(subtitle="mutation rate per generation") +
+  theme(plot.subtitle=element_text(hjust=0.5), 
+        legend.position= "right",
+        panel.border = element_rect(linetype = "solid", fill = NA),
+        panel.grid.major.x = element_blank()) +
+  geom_vline(xintercept = seq(1.5, length(levels(dat$nbiallelic)) - 0.5, by=1),
+               color = "gray60", linetype = "dotted") +
+  ylab(ylab) +
+  xlab(xlab)
+}
 ```
 
 ## Visualize prop. of reps with isomorphic (hash) matches
@@ -1053,6 +846,29 @@ plot_graphs_point_pct_bothnets(bothnets_trueh, yvar = "prop_min_hashmatch",
   subtitle = "",
   seed = 24)
 ggsave("figures/isomorphism/fig_prophashmatches.pdf", height=5, width=6) #units are inches
+```
+
+let's split this into two figures:
+```{r}
+bothnets_trueh_manysnps = bothnets_trueh %>%
+  filter(nbiallelic == 100000)
+
+bothnets_trueh_fewsnps = bothnets_trueh %>%
+  filter(nbiallelic == 10000)
+
+plot_accuracy_2panels(bothnets_trueh_manysnps,  yvar = "prop_min_hashmatch",
+                xlab = "network / search h",
+                xlabels = isomorphism_labeller,
+                ylab="% replicates with the true network in its set of top graphs", 
+                seed=27)
+ggsave("figures/isomorphism/fig_prophashmatches_manysnps.pdf", height=5, width=9) 
+
+plot_accuracy_2panels(bothnets_trueh_fewsnps,  yvar = "prop_min_hashmatch",
+                xlab = "network / search h",
+                xlabels = isomorphism_labeller,
+                ylab="% replicates with the true network in its set of top graphs", 
+                seed=27)
+ggsave("figures/isomorphism/fig_prophashmatches_fewsnps.pdf", height=5, width=9) 
 ```
 
 Get stats for results text:
@@ -1381,16 +1197,18 @@ ggsave("figures/scorediff/fig_g4_90thperc-scorediff.pdf", height=8, width=10)
 
 # Compare worst residuals
 
-## G1 h_search 1 vs. 2
+## G1 h_search 1 vs. 2 on franklin00
 
 So this will just be for G1 graphs:
-15 of each on each cluster (franklin00-franklin03)
+15 of each on each cluster (franklin00-franklin03).
+This is run on franklin00 after all individual csvs 
+from other franklins were moved there.
 
 ```{r}
-wr0 = read_csv("worstresid/worstresid0.csv")
-wr1 = read_csv("worstresid/worstresid1.csv")
-wr2 = read_csv("worstresid/worstresid2.csv")
-wr3 = read_csv("worstresid/worstresid3.csv")
+wr0 = read_csv("output/worstresid/fleg-pruned/worstresid0.csv")
+wr1 = read_csv("output/worstresid/fleg-pruned/worstresid1.csv")
+wr2 = read_csv("output/worstresid/fleg-pruned/worstresid2.csv")
+wr3 = read_csv("output/worstresid/fleg-pruned/worstresid3.csv")
 
 wr = rbind(wr0, wr1)
 wr = rbind(wr, wr2)
@@ -1399,7 +1217,7 @@ wr = rbind(wr, wr3)
 #write out csv
 wr = wr %>% rowwise() %>% 
                       mutate(paramid = paste(c(nind, lindist, nbiallelic, mutrate, net), collapse="-"))
-write.csv(wr, file = "wr_all.csv", row.names = FALSE)
+write.csv(wr, file = "output/worstresid/fleg-pruned/wr_all.csv", row.names = FALSE)
 ```
 
 and now we can compare the `worstresid` column by 
@@ -1455,65 +1273,19 @@ type1_fromwr = wr_byirep  %>%
   ) %>%
   mutate(type1 = 1 - prop_whsearch1)
 
-write.csv(type1_fromwr, "type1_fromwr.csv", row.names = FALSE)
+write.csv(type1_fromwr, "output/worstresid/fleg-pruned/type1_fromwr.csv", row.names = FALSE)
 
 min(wr_byirep$ngraphs_h2_after) #1
 #there is always at least 1 graph accepted from h_search==2
 ```
 
-now let's do this locally:
+## G4 h_search 4 on franklin01
 
 ```{r}
-type1_wr = read.csv("output/h1_type1_fromwr.csv")
-type1_wr$lindist = as.factor(type1_wr$lindist)
-type1_wr$nind = as.factor(type1_wr$nind)
-type1_wr$mutrate = as.factor(type1_wr$mutrate)
-type1_wr$nbiallelic = as.factor(type1_wr$nbiallelic)
-
-colval = c('#FF006E', '#FC6722', '#F5B400', '#3A86FF','#8B44EE')
-shapeval = c(21,23,24)
-nsites_labels = c("n = 10,000 SNPs", "n = 100,000 SNPs", "n = 10,000 SNPs", "n = 100,000 SNPs")
-mutrate_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07"))
-
-plot_type1error = function(dat, ylab, seed){
-  ggplot(dat, aes(y=type1, x=nbiallelic)) +
-  geom_point(aes(color=lindist, shape=nind),
-             alpha=0.8, stroke=1, position=position_jitterdodge(seed=seed,
-                  jitter.width=0.3, dodge.width=0.85), size=1.5) +
-  scale_shape_manual(values=shapeval, labels=c("1","2","10")) +
-  scale_color_manual(values=colval, labels=c("0.0","0.15", "0.3", "0.5", "0.7")) +
-  guides(color = guide_legend(order=2, title="rate variation\nacross lineages",
-              override.aes = list(color=colval, shape=21)),
-         shape = guide_legend(order=3, title="# of individuals",
-              override.aes = list(stroke=0.5))) +
-  theme_minimal() +
-  scale_x_discrete(labels= nsites_labels, expand = expansion(add = c(0.5, 0.5))) +
-  scale_y_continuous(name = ylab, 
-        breaks=c(0.0,0.05,0.1,0.2,0.3,0.4, 0.5),
-        minor_breaks=c(0.15,0.25,0.35,0.45),
-        expand=expansion(add = c(.015, 0.025))) +
-  facet_wrap(~ mutrate, labeller = mutrate_labeller) +
-  labs(subtitle="mutation rate per gen.") +
-  theme(plot.subtitle=element_text(hjust=0.5), 
-        legend.position= "right",
-        panel.border = element_rect(linetype = "solid", fill = NA),
-        panel.grid.major.x = element_blank()) +
-  xlab("# biallelic sites") +
-  geom_vline(xintercept = seq(1.5, length(levels(dat$nbiallelic)) - 0.5, by=1),
-               color = "gray60", linetype = "dotted")
-}
-
-plot_type1error(type1_wr, ylab="proportion incorrectly rejecting h=1", seed=35)
-ggsave("figures/worstresid/fig_wrtype1.pdf", height=5, width=9)
-```
-
-## G4 h_search 4
-
-```{r}
-wr0 = read_csv("g4_worstresid0.csv")
-wr1 = read_csv("g4_worstresid1.csv")
-wr2 = read_csv("g4_worstresid2.csv")
-wr3 = read_csv("g4_worstresid3.csv")
+wr0 = read_csv("output/worstresid/fleg/g4_worstresid0.csv")
+wr1 = read_csv("output/worstresid/fleg/g4_worstresid1.csv")
+wr2 = read_csv("output/worstresid/fleg/g4_worstresid2.csv")
+wr3 = read_csv("output/worstresid/fleg/g4_worstresid3.csv")
 
 wr = rbind(wr0, wr1)
 wr = rbind(wr, wr2)
@@ -1522,7 +1294,7 @@ wr = rbind(wr, wr3)
 #write out csv
 wr = wr %>% rowwise() %>% 
                       mutate(paramid = paste(c(nind, lindist, nbiallelic, mutrate, net), collapse="-"))
-write.csv(wr, file = "wr_all.csv", row.names = FALSE)
+write.csv(wr, file = "output/worstresid/fleg/wr_all.csv", row.names = FALSE)
 
 wr_unfiltered = wr %>%
   #group by irep + paramid (not h_search!)
@@ -1563,10 +1335,58 @@ type1_fromwr = wr_byirep  %>%
             median_ngraphs_h4_after = median(ngraphs_h4_after)) %>%
   mutate(type1 = 1 - prop_whsearch4)
 
-write.csv(type1_fromwr, "type1_fromwr.csv", row.names = FALSE)
+write.csv(type1_fromwr, "output/worstresid/fleg/type1_fromwr.csv", row.names = FALSE)
 ```
 
-locally:
+## Visualize results locally
+
+after downloading files locally, visualize:
+
+```{r}
+type1_wr = read.csv("output/h1_type1_fromwr.csv")
+type1_wr$lindist = as.factor(type1_wr$lindist)
+type1_wr$nind = as.factor(type1_wr$nind)
+type1_wr$mutrate = as.factor(type1_wr$mutrate)
+type1_wr$nbiallelic = as.factor(type1_wr$nbiallelic)
+
+colval = c('#FF006E', '#FC6722', '#F5B400', '#3A86FF','#8B44EE')
+shapeval = c(21,23,24)
+nsites_labels = c("n = 10,000 SNPs", "n = 100,000 SNPs", "n = 10,000 SNPs", "n = 100,000 SNPs")
+mutrate_labeller = as_labeller(c(`1.25e-08` = "µ = 1.25e-08", `1.25e-07` = "µ = 1.25e-07"))
+
+plot_accuracy_2panels = function(dat, ylab, seed){
+  ggplot(dat, aes(y=type1, x=nbiallelic)) +
+  geom_point(aes(color=lindist, shape=nind),
+             alpha=0.8, stroke=1, position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.85), size=1.5) +
+  scale_shape_manual(values=shapeval, labels=c("1","2","10")) +
+  scale_color_manual(values=colval, labels=c("0.0","0.15", "0.3", "0.5", "0.7")) +
+  guides(color = guide_legend(order=2, title="rate variation\nacross lineages",
+              override.aes = list(color=colval, shape=21)),
+         shape = guide_legend(order=3, title="# of individuals",
+              override.aes = list(stroke=0.5))) +
+  theme_minimal() +
+  scale_x_discrete(labels= nsites_labels, expand = expansion(add = c(0.5, 0.5))) +
+  scale_y_continuous(name = ylab, 
+        breaks=c(0.0,0.05,0.1,0.2,0.3,0.4, 0.5),
+        minor_breaks=c(0.15,0.25,0.35,0.45),
+        expand=expansion(add = c(.015, 0.025))) +
+  facet_wrap(~ mutrate, labeller = mutrate_labeller) +
+  labs(subtitle="mutation rate per gen.") +
+  theme(plot.subtitle=element_text(hjust=0.5), 
+        legend.position= "right",
+        panel.border = element_rect(linetype = "solid", fill = NA),
+        panel.grid.major.x = element_blank()) +
+  xlab("# biallelic sites") +
+  geom_vline(xintercept = seq(1.5, length(levels(dat$nbiallelic)) - 0.5, by=1),
+               color = "gray60", linetype = "dotted")
+}
+
+plot_accuracy_2panels(type1_wr, ylab="proportion incorrectly rejecting h=1", seed=35)
+ggsave("figures/worstresid/fig_wrtype1.pdf", height=5, width=9)
+```
+
+
 ```{r}
 g4_type1_wr = read.csv("output/h4_type1_fromwr.csv")
 g4_type1_wr$lindist = as.factor(g4_type1_wr$lindist)
@@ -1574,6 +1394,6 @@ g4_type1_wr$nind = as.factor(g4_type1_wr$nind)
 g4_type1_wr$mutrate = as.factor(g4_type1_wr$mutrate)
 g4_type1_wr$nbiallelic = as.factor(g4_type1_wr$nbiallelic)
 
-plot_type1error(g4_type1_wr, ylab="proportion incorrectly rejecting h=4", seed=35)
+plot_accuracy_2panels(g4_type1_wr, ylab="proportion incorrectly rejecting h=4", seed=35)
 ggsave("figures/worstresid/fig_wrtype1.pdf", height=5, width=9)
 ```

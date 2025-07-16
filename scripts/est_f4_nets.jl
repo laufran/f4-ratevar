@@ -39,12 +39,12 @@ Arguments and default values (global variables, to avoid being re-calculated):
 - `nmt = num_nearmajortrees`: length of `trees2find`
 """
 function ndisplayed_nearmajortrees(net, trees2find=nearmajortree, nmt=num_nearmajortrees)
-  dtrees = removedegree2nodes!.(displayedTrees(net, 0.0))
+  dtrees = removedegree2nodes!.(displayedtrees(net, 0.0))
   notfound = collect(eachindex(trees2find))
   for tree in dtrees
     isempty(notfound) && break
     for (ii,i) in enumerate(notfound)
-      if hardwiredClusterDistance(tree, trees2find[i], false) == 0
+      if hardwiredclusterdistance(tree, trees2find[i], false) == 0
         deleteat!(notfound, ii) # no need to look for trees2find[i] in later displayed trees
         break # 'tree' cannot match other near-major trees
       end
@@ -185,16 +185,20 @@ function calcgraphs_fromvcf(path::AbstractString, net_adjlist::DataFrame, nruns:
   nind =      parse(Int, split(dirstring[2], "-")[1])
   lindist =   parse(Float64, split(dirstring[5], "-")[1])
   truenet =   split(path, "_")[1]
-  if truenet == "fleg"
-    truenet = fleg_nobott
-  elseif truenet == "fleg-pruned"
-    truenet = fleg_pruned_nobott
-  else
-      @error "need to specify adjacency list"
-  end
+  truenet =   replace(truenet, "-" => "_")
+  truenet =   eval(Symbol(truenet * "_nobot"))
   
-  nearmajortree = displayedTrees(truenet, 0.45)
+  nearmajortree = displayedtrees(truenet, 0.45)
   num_nearmajortrees = length(nearmajortree)
+
+  if num_nearmajortrees < 2
+    if truenet.numhybrids == 1 # then use the 2 displayed tree, even if low γ
+      nearmajortree = displayedtrees(truenet, 0.0)
+      num_nearmajortrees = length(nearmajortree)
+    else
+      @error "$num_nearmajortrees near-major trees in truenet, instead of 2"
+    end
+  end
 
   #initialize number of runs for each graph search
   numruns = collect(1:nruns)
@@ -236,21 +240,21 @@ function calcgraphs_fromvcf(path::AbstractString, net_adjlist::DataFrame, nruns:
          varies across replicates =#
     truegraph = edgelist_to_net(net_edges[!, "from"], net_edges[!, "to"], 
                   net_edges[!, "type"], net_edges[!, "weight"])
-    net_h = truegraph.numHybrids
+    net_h = truegraph.numhybrids
     truetree = nothing
-    try truetree = majorTree(truegraph) # does not include the degree-2 bottleneck node bc from qpGraph
+    try truetree = majortree(truegraph) # does not include the degree-2 bottleneck node bc from qpGraph
     catch e
       @error """cannot extract major tree from true graph with estimated params, from:
       $rep_dir
       problematic truegraph:
-      $(writeTopology(truegraph))
+      $(writenewick(truegraph))
       """
     end
     #= this tree depends on the replicate through the estimated gamma's:
        keeps hybrid edges with gamma > 0.5. It may NOT be the true major tree
        from the true network. But okay, especially for the flegontov network with
        partner hybrid edges with gamma very close to 0.5. =#
-    truegraph_string = writeTopology(truegraph, internallabel=false)
+    truegraph_string = writenewick(truegraph, internallabel=false)
 
     #start logging (per replicate, with info from each run in there)
     #having one log per replicate (not per rep/h_search) might be a problem
@@ -349,13 +353,13 @@ function calcgraphs_fromvcf(path::AbstractString, net_adjlist::DataFrame, nruns:
           but the `correct_nethwdist.jl` script is a patch on our buggy version.
           =#
           removedegree2nodes!(net, true) # keeproot=true
-          push!(top_graphs_newick, writeTopology(net, internallabel=false))
-          push!(top_graphs_hest, net.numHybrids)
+          push!(top_graphs_newick, writenewick(net, internallabel=false))
+          push!(top_graphs_hest, net.numhybrids)
           push!(top_graphs_ndisplayed, ndisplayed_nearmajortrees(net, nearmajortree, num_nearmajortrees))
-          push!(top_graphs_nethwdist, hardwiredClusterDistance(truegraph, net, true))
+          push!(top_graphs_nethwdist, hardwiredclusterdistance(truegraph, net, true))
 
           #=
-          originally we had `displayedTrees(net, 0.1)` and `nearmajortree[1]` as bugs.
+          originally we had `displayedtrees(net, 0.1)` and `nearmajortree[1]` as bugs.
           instead we want to display *all* trees from the estimated network
           with no gamma threshold (= setting to 0.0).
           and erroneously we were looking at the "first" major tree, but to match the viz
@@ -371,10 +375,10 @@ function calcgraphs_fromvcf(path::AbstractString, net_adjlist::DataFrame, nruns:
             @warn "cannot calculate min displayed tree distance to missing truetree"
           else
             treesdisplayedingraph = HybridNetwork[]
-            treesdisplayedingraph = displayedTrees(net, 0.0)
+            treesdisplayedingraph = displayedtrees(net, 0.0)
             for tree in treesdisplayedingraph
               #checking against just the first near major tree
-              hwtreedist = hardwiredClusterDistance(nearmajortree[2], tree, true) # true: rooted at same outgroup
+              hwtreedist = hardwiredclusterdistance(nearmajortree[2], tree, true) # true: rooted at same outgroup
               if hwtreedist < minhwd
                 minhwd = hwtreedist
               end

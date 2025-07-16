@@ -13,14 +13,14 @@ using RCall
 
 # load fleg (with bottleneck node) and fleg_major (bottleneck node suppressed)
 include("input/fleg-net.jl")
-nearmajortree = displayedTrees(fleg, 0.45) # still has bottleneck node
+nearmajortree = displayedtrees(fleg, 0.45) # still has bottleneck node
 removedegree2nodes!.(nearmajortree)  # removes the root also
 
-alldisplayed = removedegree2nodes!.(displayedTrees(fleg, 0.0))
+alldisplayed = removedegree2nodes!.(displayedtrees(fleg, 0.0))
 # 16 trees: but some have the same topology
 for j in reverse(1:16)
   for i in 1:(j-1)
-    if hardwiredClusterDistance(alldisplayed[j], alldisplayed[i], true) == 0
+    if hardwiredclusterdistance(alldisplayed[j], alldisplayed[i], true) == 0
       deleteat!(alldisplayed, j)
       break # don't try other i's!
     end
@@ -29,7 +29,7 @@ end
 length(alldisplayed) # 8 displayed tree *topologies* only
 
 function ndisplayed_intargetlist(net::HybridNetwork, trees2find)
-  dtrees = removedegree2nodes!.(displayedTrees(net, 0.0))
+  dtrees = removedegree2nodes!.(displayedtrees(net, 0.0))
   ndisplayed_intargetlist(dtrees, trees2find)
 end
 function ndisplayed_intargetlist(candidatetrees::Vector{HybridNetwork}, trees2find)
@@ -38,7 +38,7 @@ function ndisplayed_intargetlist(candidatetrees::Vector{HybridNetwork}, trees2fi
   for tree in candidatetrees
     isempty(notfound) && break
     for (ii,i) in enumerate(notfound)
-      if hardwiredClusterDistance(tree, trees2find[i], false) == 0
+      if hardwiredclusterdistance(tree, trees2find[i], false) == 0
         deleteat!(notfound, ii) # no need to look for trees2find[i] in later displayed trees
         break # 'tree' cannot match other near-major trees
       end
@@ -174,10 +174,10 @@ df_14.majortree_hwd = Vector{Union{Missing, Int}}(missing, nn)
 df_14.nnearmajor_displayed = Vector{Union{Missing, Int}}(missing, nn)
 df_14.ndisplayed_displayed = Vector{Union{Missing, Int}}(missing, nn)
 for (i,net) in enumerate(nets)
-  df_14.truenet_hwd[i] = hardwiredClusterDistance(net, fleg_nobott, true)
+  df_14.truenet_hwd[i] = hardwiredclusterdistance(net, fleg_nobott, true)
   df_14.truenet_hwd[i] == 0 || @error("graph $i was supposed to be at distance 0...")
-  df_14.majortree_hwd[i] = hardwiredClusterDistance(majorTree(net), nearmajortree[1], false)
-  dtrees = removedegree2nodes!.(displayedTrees(net, 0.0))
+  df_14.majortree_hwd[i] = hardwiredclusterdistance(majortree(net), nearmajortree[1], false)
+  dtrees = removedegree2nodes!.(displayedtrees(net, 0.0))
   df_14.nnearmajor_displayed[i] = ndisplayed_intargetlist(dtrees, nearmajortree)
   df_14.ndisplayed_displayed[i] = ndisplayed_intargetlist(dtrees, alldisplayed)
 end
@@ -218,7 +218,7 @@ for i in [-3,-4,-5,-6,-9,-15] rotate!(mynet, i); end
 
 mynet4 = deepcopy(nets[4]);
 for i in [-3,-5,-6,-8,-9,-10,-12] rotate!(mynet4, i); end
-setGamma!(mynet4.edge[2], 0.51)  # was γ=0.31866503546018676
+setgamma!(mynet4.edge[2], 0.51)  # was γ=0.31866503546018676
 
 mynet3 = deepcopy(nets[3]);
 for i in [-3,-4,-6,-7,-13, -9,-10] rotate!(mynet3, i); end

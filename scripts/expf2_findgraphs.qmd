@@ -1,0 +1,534 @@
+---
+title: "giving expected f2 values to qpgraph & find_graphs"
+output: html_document
+date: "2025-06"
+---
+
+```{julia}
+using DataFrames, CSV
+include("input/fleg-net.jl") # loads PhyloNetworks, PhyloPlots, RCall
+R"library(admixtools)"
+R"library(dplyr)"
+R"library(tibble)"
+@rlibrary admixtools
+# below: for breakedge!, net_to_edgelist & edgelist_to_net
+include("scripts/interop_admixtools.jl")
+```
+
+Goal: give expected f2 blocks to find_graphs.
+    [X] calculate expected f2 blocks on true graph
+        [X] map coal. units --> edge lengths (as named by igraph format)
+        [X] double check I'm giving right input to f2_function?
+    [X] give f2 blocks to find_graphs
+
+# Calculate expected f2 of `g4-sg`
+
+## convert branch lengths: from generations to coalescent units
+
+Do this first, because the dictionary `flegpopsizes` uses edge numbers in `fleg`
+and later we will need to break some hybrid edges, so we will have new edge
+(and new edges numbers), not in this dictionary.
+
+```{julia}
+g4 = deepcopy(fleg)
+for e in g4.edge
+    e.length /= flegpopsizes[e.number]
+end
+# plot(g4, showedgelength=true); # visually check for small values
+first(sort([e.length for e in g4.edge], rev=true), 3) # 120, 2.898, 2.233
+```
+The edge to `chimp` is very long (120 coalescent units), but the others are < 2.9
+
+Next: we can remove the bottleneck node, which will fuse its 2 edges into
+a single edge, whose length will be the sum of their coalescent units: this is
+what we want.
+Do this *before* the next step, which adds degree-2 nodes!!
+
+```{julia}
+length(g4.node) # 24
+removedegree2nodes!(g4, true); # true: to keep the root as a degree-2 node
+length(g4.node) # 23: as expected
+```
+
+## Convert g4 to igraph format
+
+Set up the true graph in `igraph` format first.
+`fleg` has hybrid edges of positive length: will cause a problem later,
+because the edge-list format records a single number per edge:
+length for tree edges, γ only for hybrid edges. See warnings below:
+```{julia}
+net_to_edgelist(deepcopy(fleg)) # warnings, won't work with admixtools
+```
+
+```{julia}
+for e in g4.edge
+    if e.hybrid && e.length > 0
+        breakedge!(e, g4)
+    end
+end
+length(g4.node) # 30: new nodes added at the bottom of (30-23) = 7 hybrid edges
+```
+
+Next: finally create the edgelist and igraph object.  
+Note that this is **resetting edge numbers** in `g4`,
+and also **naming** all internal nodes.
+```{julia}
+g4_edgelist = net_to_edgelist(g4)
+sort([e.number for e in g4.edge]) == 1:33 # check: >0 and consecutive edge numbers
+any(n.name == "" for n in g4.node) # false: all nodes do have a name
+sort([n.name for n in g4.node if !n.leaf]) # to see the names
+```
+
+This process is used in `input/pop-net.jl` to create an csv file for the
+"edgelist" of each population network, saved in `input/pop-net_edgelist/`.
+So we can re-load the edgelist data frame like this below, without having
+to re-run the code above:
+```{julia}
+CSV.read("input/pop-net_edgelist/g4-sg_cu.csv", DataFrame)
+```
+
+Given the edge list to R and make it an igraph:
+```{julia}
+@rput g4_edgelist
+R"g4_igraph = edges_to_igraph(g4_edgelist)"
+```
+
+
+## Map edges to strings: to be used as argument names for the "graph f2 function"
+
+```{julia}
+R"par"(mar=[0,0,0,0]);
+plot(g4, showedgelength=true, shownodelabel=true);
+```
+
+Looking at the plot of `g4`, we get this:
+
+    H1 = ghost -> AMH = ancestor of modern humans, γ=0.19
+    H2 = neanderthal -> denisovan: major γ=0.52
+        hominin ancestor -> denisovan: minor γ = 0.48
+    H3 = neanderthal -> ghost, γ = 0.06
+    H4 = ghost -> na0 = nonafrican, γ = 0.32
+
+Create dictionary mapping edge numbers to the string required for naming the
+arguments given to admixtools `graph_f2_function`:
+
+```{julia}
+edgenumber_to_string = Dict{Int,String}()
+edgename_to_coalunit = Dict{String,Float64}()
+for e in g4.edge
+    str = getparent(e).name * "|" * getchild(e).name
+    edgenumber_to_string[e.number] = str
+    if e.hybrid
+        e.length == 0.0 || @error "hybrid edge of >0 length"
+        continue # do *not* store length of hybrid edges
+    end
+    edgename_to_coalunit[str] = e.length
+end
+edgenumber_to_string
+keys(edgenumber_to_string) == Set(1:33) # true
+length(edgename_to_coalunit) == 25 # < 33: only tree edges
+edgename_to_coalunit
+```
+
+Copy-paste this dictionary, with full precision on edge lengths, and
+in the format used by the admixtools' f2-function:
+```{julia}
+for (k,v) in edgename_to_coalunit
+    println("`$k` = $v,")
+end
+```
+
+## Feed fixed edge lengths to the expected f2 function
+
+here, the argument values are the strings built above, and the values are
+edge lengths in coalescent units (also calculated above).
+
+Caveat: with argument `H1 = 0.19`, we guess that one of the 2 parent edges of
+hybrid `H1` is assigned γ=0.19. But we don't know which one!
+
+```{julia}
+R"g4_expf2fxn = graph_f2_function(g4_igraph)"
+R"""
+expf2 = g4_expf2fxn(
+    H1 = 0.19, # how do we know which of the 2 edges is assigned this γ?
+    H2 = 0.48, # or should this be 0.52?
+    H3 = 0.06,
+    H4 = 0.32,
+    `na0|non_africa_east` = 0.06692406692406692,
+    `i5|i4` = 0.0780058733834077,
+    `i1|neanderthal_east` = 0.03889158969372873,
+    `i3|i12` = 0.0056727478763732185,
+    `i6|i5` = 2.8980064381318122,
+    `i5|i13` = 0.9895806534602521,
+    `na0|non_africa_west` = 0.027641002685765442,
+    `H3|i9` = 0.054245283018867926,
+    `i2|i8` = 0.5905484885788538,
+    `i4|NeAMH` = 0.05199568250136372,
+    `i4|i7` = 0.6535386084258265,
+    `i3|i10` = 2.233490566037736,
+    `NeAMH|i2` = 0.2645181092694905,
+    `Ne0|i1` = 0.04142648795055212,
+    `AMH|africa_west` = 0.07087851642307087,
+    `NeAMH|i3` = 0.01365011984045256,
+    `i2|Ne0` = 0.7325352977286679,
+    `H4|na0` = 0.03219589615689831,
+    `a0|africa_east` = 0.036791001105355554,
+    `a0|i11` = 0.17598675321011237,
+    `AMH|a0` = 0.08628946434905994,
+    `Ne0|neanderthal_west` = 0.007743593305090632,
+    `H1|AMH` = 0.012022268289721602,
+    `i6|chimp` = 120.0,
+    `H2|denisovan` = 0.16741257906671442)
+"""
+@rget expf2
+show(expf2, allrows=true)
+```
+
+results using γs of 0.19, 0.48, 0.06, 0.32:
+```
+28×3 DataFrame
+ Row │ pop1              pop2              f2          
+     │ String            String            Float64     
+─────┼─────────────────────────────────────────────────
+   1 │ africa_east       africa_west         0.544514
+   2 │ africa_east       chimp             123.342
+   3 │ africa_east       denisovan           1.29792
+   4 │ africa_east       neanderthal_east    1.44085
+   5 │ africa_east       neanderthal_west    1.36827
+   6 │ africa_east       non_africa_east     1.31801
+   7 │ africa_east       non_africa_west     1.27873
+   8 │ africa_west       chimp             123.29
+   9 │ africa_west       denisovan           1.24572
+  10 │ africa_west       neanderthal_east    1.38864
+  11 │ africa_west       neanderthal_west    1.31607
+  12 │ africa_west       non_africa_east     1.32104
+  13 │ africa_west       non_africa_west     1.28175
+  14 │ chimp             denisovan         123.919
+  15 │ chimp             neanderthal_east  124.105
+  16 │ chimp             neanderthal_west  124.033
+  17 │ chimp             non_africa_east   124.065
+  18 │ chimp             non_africa_west   124.025
+  19 │ denisovan         neanderthal_east    1.76816
+  20 │ denisovan         neanderthal_west    1.69558
+  21 │ denisovan         non_africa_east     1.83146
+  22 │ denisovan         non_africa_west     1.79218
+  23 │ neanderthal_east  neanderthal_west    0.0880617
+  24 │ neanderthal_east  non_africa_east     0.80212
+  25 │ neanderthal_east  non_africa_west     0.762837
+  26 │ neanderthal_west  non_africa_east     0.782505
+  27 │ neanderthal_west  non_africa_west     0.743222
+  28 │ non_africa_east   non_africa_west     1.02714
+```
+
+See if we get the same `f2` values from PhyloNetworks v1.1.0:
+
+```{julia}
+g4j = deepcopy(fleg) # start from scratch, only convert edge lengths to CUs
+for e in g4j.edge
+    e.length /= flegpopsizes[e.number]
+end
+#= change all γ to 0.5: so that it doesn't matter which parent edge is given γ
+#  to admixtools' function created by `graph_f2_function`
+for e in g4j.edge
+    e.hybrid || continue
+    e.gamma = 0.5
+end
+=#
+f2mat = expectedf2matrix(g4j)
+taxon_to_index = Dict(tax => i for (i,tax) in enumerate(tiplabels(fleg)))
+```
+
+Merge the f2 values from admixtools and PhyloNetworks:
+```{julia}
+expf2.f2_julia = Vector{Float64}(undef, nrow(expf2))
+for r in eachrow(expf2)
+    i1 = taxon_to_index[r[:pop1]]
+    i2 = taxon_to_index[r[:pop2]]
+    r[:f2_julia] = f2mat[i1,i2]
+end
+expf2.ratio = expf2.f2 ./ expf2.f2_julia
+expf2.diff = expf2.f2 .- expf2.f2_julia
+show(expf2, allrows=true)
+```
+
+```
+28×4 DataFrame
+ Row │ pop1              pop2              f2           f2_julia    
+     │ String            String            Float64      Float64     
+─────┼──────────────────────────────────────────────────────────────
+   1 │ africa_east       africa_west         0.544514     0.193959
+   2 │ africa_east       chimp             123.342      123.167
+   3 │ africa_east       denisovan           1.29792      0.739891
+   4 │ africa_east       neanderthal_east    1.44085      1.26557
+   5 │ africa_east       neanderthal_west    1.36827      1.19299
+   6 │ africa_east       non_africa_east     1.31801      0.439923
+   7 │ africa_east       non_africa_west     1.27873      0.40064
+   8 │ africa_west       chimp             123.29       123.115
+   9 │ africa_west       denisovan           1.24572      0.687689
+  10 │ africa_west       neanderthal_east    1.38864      1.21337
+  11 │ africa_west       neanderthal_west    1.31607      1.14079
+  12 │ africa_west       non_africa_east     1.32104      0.505075
+  13 │ africa_west       non_africa_west     1.28175      0.465792
+  14 │ chimp             denisovan         123.919      123.539
+  15 │ chimp             neanderthal_east  124.105      124.105
+  16 │ chimp             neanderthal_west  124.033      124.033
+  17 │ chimp             non_africa_east   124.065      123.459
+  18 │ chimp             non_africa_west   124.025      123.419
+  19 │ denisovan         neanderthal_east    1.76816      1.36345
+  20 │ denisovan         neanderthal_west    1.69558      1.29088
+  21 │ denisovan         non_africa_east     1.83146      1.01374
+  22 │ denisovan         non_africa_west     1.79218      0.974454
+  23 │ neanderthal_east  neanderthal_west    0.0880617    0.0880617
+  24 │ neanderthal_east  non_africa_east     0.80212      1.50178
+  25 │ neanderthal_east  non_africa_west     0.762837     1.4625
+  26 │ neanderthal_west  non_africa_east     0.782505     1.4308
+  27 │ neanderthal_west  non_africa_west     0.743222     1.39152
+  28 │ non_africa_east   non_africa_west     1.02714      0.0945651
+```
+
+Hmm, they are the same in 3 cases only:
+```
+  15 │ chimp             neanderthal_east  124.105      124.105
+  16 │ chimp             neanderthal_west  124.033      124.033
+  23 │ neanderthal_east  neanderthal_west    0.0880617    0.0880617
+```
+
+The last pair is instructive:
+`non_africa_{east,west}`. They are sister (external edges: `g4j.edge[[13,14]]`)
+so their f2 must be equal or greater than 0.09456506960983237:
+```{julia}
+v1 = sum(e.length for e in g4j.edge if startswith(getchild(e).name, "non_africa_"))
+v2 = f2mat[taxon_to_index["non_africa_east"],taxon_to_index["non_africa_west"]]
+println("shortest path: $v1. f2 = $v2 should be greater.")
+v2 > v1
+```
+Conclusion: f2's from PN is determined by the LSA of the 2 taxa. But f2's from
+admixtools are increased by the chain of 2-blobs between the root and the pair's LSA.
+Both make sense, but under different models.
+
+
+Caveat on the admixtools's calculation, mentioned above:
+we don't know to which parent hybrid edge each input γ value is assigned to.
+Below: we try each possible permutation of γ assignment across the 4 hybrids,
+input that to `g4_expf2fxn` then compare with the expected f2s from PN.
+
+```{julia}
+possible_gamma_combos = collect(Iterators.product([0.19, 0.81], [0.48, 0.52], [0.06, 0.94], [0.32, 0.68]))
+
+for gammavals in possible_gamma_combos
+    gamma1 = gammavals[1]
+    gamma2 = gammavals[2]
+    gamma3 = gammavals[3]
+    gamma4 = gammavals[4]
+    @rput gamma1 gamma2 gamma3 gamma4
+    @show gammavals
+    R"""
+    expf2 = g4_expf2fxn(
+        H1 = gamma1,
+        H2 = gamma2,
+        H3 = gamma3,
+        H4 = gamma4,
+        `na0|non_africa_east` = 0.06692406692406692,
+        `i5|i4` = 0.0780058733834077,
+        `i1|neanderthal_east` = 0.03889158969372873,
+        `i3|i12` = 0.0056727478763732185,
+        `i6|i5` = 2.8980064381318122,
+        `i5|i13` = 0.9895806534602521,
+        `na0|non_africa_west` = 0.027641002685765442,
+        `H3|i9` = 0.054245283018867926,
+        `i2|i8` = 0.5905484885788538,
+        `i4|NeAMH` = 0.05199568250136372,
+        `i4|i7` = 0.6535386084258265,
+        `i3|i10` = 2.233490566037736,
+        `NeAMH|i2` = 0.2645181092694905,
+        `Ne0|i1` = 0.04142648795055212,
+        `AMH|africa_west` = 0.07087851642307087,
+        `NeAMH|i3` = 0.01365011984045256,
+        `i2|Ne0` = 0.7325352977286679,
+        `H4|na0` = 0.03219589615689831,
+        `a0|africa_east` = 0.036791001105355554,
+        `a0|i11` = 0.17598675321011237,
+        `AMH|a0` = 0.08628946434905994,
+        `Ne0|neanderthal_west` = 0.007743593305090632,
+        `H1|AMH` = 0.012022268289721602,
+        `i6|chimp` = 120.0,
+        `H2|denisovan` = 0.16741257906671442)
+    """
+    @rget expf2
+    expf2.f2_julia = Vector{Float64}(undef, nrow(expf2))
+    for r in eachrow(expf2)
+        i1 = taxon_to_index[r[:pop1]]
+        i2 = taxon_to_index[r[:pop2]]
+        r[:f2_julia] = f2mat[i1,i2]
+    end
+    expf2.ratio = expf2.f2 ./ expf2.f2_julia
+    expf2.diff = expf2.f2 .- expf2.f2_julia
+    show(expf2[ expf2[!,:diff] .== 0, :])
+end
+```
+
+showing γs & the rows that have no difference between our admixtools & PN values:
+the same 3 rows as above remain constant across all 16 γ assignments.
+
+## convert data frame of f2s into a 3d array
+
+```{julia}
+taxa = tiplabels(g4)
+loci = ["l1","l2"]
+R"expf2_3d = array(0, c(8,8,2))" # 8 taxa, 2 genomic blocks: both the same
+R"dimnames(expf2_3d) = list($taxa, $taxa, $loci)"
+for i in 1:8
+    for j in 1:(i-1)
+        rowi = findfirst(expf2.pop1 .== taxa[i] .&& expf2.pop2 .== taxa[j])
+        if isnothing(rowi)
+            rowi  = findfirst(expf2.pop1 .== taxa[j] .&& expf2.pop2 .== taxa[i])
+        end
+        isnothing(rowi) && error("i=$i, j=$j")
+        val = expf2.f2[rowi]
+        R"expf2_3d[$i,$j,1] = $val"
+        R"expf2_3d[$j,$i,1] = $val"
+        R"expf2_3d[$i,$j,2] = $val"
+        R"expf2_3d[$j,$i,2] = $val"
+    end
+end
+R"expf2_3d"
+```
+
+low-level trials:
+```{julia}
+R"""
+graph = edges_to_igraph(g4_edgelist)
+pops = get_leafnames(graph)
+f2_blocks = admixtools:::get_f2(expf2_3d, pops, afprod = FALSE, verbose = TRUE)
+precomp = qpgraph_precompute_f3(f2_blocks, pops, f3basepop="chimp", lambdascale=1,
+    boot=FALSE, seed=1, diag_f3=1e-5, lsqmode=2)
+str(precomp)
+"""
+```
+
+
+# Run qpgraph on 1 set of expected f2s
+
+Challenge: f2s (and f3s) are known perfectly: their standard errors are 0.
+Normally, their uncertainty matrix Q is calculated as their variances &
+covariances across genomic blocks. The inverse of Q is used to calculate the
+score optimized by `qpgraph`.
+
+To handle this challenge, use either option:
+- `lsqmode=2`: to set Q=I, which is invertible. The resulting score is just the
+  sum of squares of the f3 residuals.
+- `diag = δ`: to add value `δ` along the diagonal of Q, to make it invertible.
+  If Q is originally 0, then `δI` is used instead to calculate the score, so the
+  score will depend heavily on the value of δ.
+
+## first trials: giving f2s as a tibble is wrong
+
+The trials can be ignored. When it runs and we look at the f2 values in the
+resulting object, we see that the fitted f2 values do not match the observed f2s:
+the residuals are very large.  So it is unclear why the score is small.
+
+```{julia}
+R"qpgraph(expf2, g4_edgelist, lsqmode = FALSE)"         # score = 9.106742e-05
+R"qpgraph(expf2, g4_edgelist, lsqmode = TRUE)"          # score = 9.106742e-05
+R"qpgraph(expf2, g4_edgelist, diag = 0.0000000000001)"  # score = 1.426314e-18
+R"f2results = qpgraph(expf2, g4_edgelist, lsqmode = 2)" # score = 9.106742e-05
+R"qpgraph(expf2, g4_edgelist, lsqmode = 2, return_fstats = TRUE)" # does not run
+```
+
+## correct: input a 3d-array of f2 values and option lsqmode = 2
+
+3d-array built above: the f2 matrix is repeated twice, as if there were 2
+genomic blocks. With 2 blocks, admixtools can calculate (co)variances (it's
+okay to divide by (n-1) when the same size is n=2 blocks, but not 1 block).
+The observed Q is then well-defined, and 0 because the 2 pretend blocks have
+the same f2s. Without `lsqmode=2`, the scores are too big because Q=0 or
+Q + a small δ is inverted.
+
+This works, forcing Q=I to calculate the score being optimized:
+
+```{julia}
+R"qpgraph(expf2_3d, g4_edgelist, lsqmode = 2)" # score = 9.106742e-05: same, but not fitted f2s make sense
+R"results = qpgraph(expf2_3d, g4_edgelist, lsqmode = 2, return_fstats = TRUE)" # works
+# largest absolute residual on f2s:
+R"max(abs(results$f2[,'diff']))" # 0.008075291
+```
+
+## use f2 data to fit candidate graphs
+
+Two lists of candidate graphs:
+1. population networks on which extra simulations were done (those simulations
+   were limited to the best case: 10 individuals, many SNPs, no rate variation
+   across lineages)
+2. graphs found to be top-scoring (with a score within 0.05 of the best score),
+   on replicates simulated under `g4` (aka `fleg`, or `g4-sg`) in the best-case
+   scenario: 10 individuals, many SNPs, no rate variation across lineages.
+   These top-scoring graphs were then filtered to only keep those with a correct
+   tree-of-blob, that is: 1 large blob and only 1 non-trivial cut edge: the edge
+   to separate the 2 non-africa populations. This gave 31 graphs, all different
+   from g4. A data frame with this list is in
+   `output/g14_topgraphs_byrep_scoretol0.05_correctToB_bestscenario.csv`.
+
+For each network in each list, a data frame was created to save the network as
+an edge list (data frame) and saved to a csv file. These files are in
+`input/pop-net_edgelist/g*_cu.csv` and in
+`output/g14_topgraphs_byrep_scoretol0.05_correctToB_bestscenario_edgelist/*.csv`.
+
+Below is the code to create these csv file for list #2:
+```{julia}
+using CSV, DataFrames
+using PhyloNetworks
+include("scripts/interop_admixtools.jl") # load def of getedgelist_coalunits!
+rootname = "output/g14_topgraphs_byrep_scoretol0.05_correctToB_bestscenario"
+rootdir = rootname * "_edgelist"
+mkdir(rootdir)
+df = CSV.read("$rootname.csv", DataFrame)
+allunique(df.hash) || error("some nets are repeated")
+for r in eachrow(df)
+  net = readnewick(r[:newick])
+  filename = joinpath(rootdir, "$(r[:hash]).csv")
+  getedgelist_coalunits!(net; csvfile=filename)
+end
+```
+
+We also created 2 sets of f2 values:
+1. averaged f2 values in simulated data, averaged over all 100 replicates from
+   the best-case scenario
+2. expected f2 values from g4, when g4 has edge parameters fitted to the averaged
+   f2 values in simulated data (from #1) above.
+
+Note about #2: these f2 data are expected from g4 *exactly*, and as calculated
+by admixtools, to get "perfect" data. To get perfect data as close as possible
+to data in our simulations, we get the expected f2 values on g4, with edge
+lengths and gamma's fitted to the average observed f2 data.
+
+minor problem: all but 1 of the edge weights are unidentifiable, as detected
+by admixtools. When we fit g4, the resulting fitted f2s and the score do not
+vary with the seed, but the resulting edge weight do vary extensively. It does
+not matter, because we seek to retrieve the expected f2s, not the edge parameters.
+
+Next, we fit each set of f2 values to each network in each list.
+See code in `expf2_findgraphs.r`, with results in
+`output/fleg_10-indls_118000-genes_100000-biall_0.0-lindist_1.25e-8-subrate/`:
+f2 values in `avgf2.csv` and `fittedf2.csv`, and graphs fitting results in
+subfolders `avgf2_fit/` and `fittedf2_fit/`:
+- score & worst residuals in `netscores.csv`
+- joint plot in `netscores.pdf`
+
+Main conclusions: see the 3-panel figure `SMfig_netscores.pdf` in main folder
+`output/fleg_10-indls_118000-genes_100000-biall_0.0-lindist_1.25e-8-subrate/`
+* g4 fits the averaged observed (simulated) f2s really well, with
+  a very low score (not 0 due to numerical optimization, but very small
+  `7.68e-9` or `7.74e-9` depending on the seed) and with very small wost residual
+  (`4.37e-5` or `4.35e-5` depending on the seed).
+* 6 networks and graphs fit better than g4 (based on a lower score) from both
+  sets of f2 data:
+  `g4-l4-c34` and graphs from rows 20,28,19,2,30: all with h=4. (30,2 have the
+  exact same score and worst residual: their points overlap on the graph)
+  Graphs in rows 14,8 fit better than g4 on 1 set of f2 data.
+  `g3-tc` fits very similarly (with worse scores but still < 1e-8) on both sets.
+
+Plot these 6 networks (and g4) to see how different they are, or what they have
+in common: see julia code in `scripts/expf2_simulated.jl` and output figure in
+`figures/SMfig_nets_samefitasg4.pdf` .
+Conclusion: except for `g4-l4-c34`, which was similar to `g4` by design,
+the other 5 networks don't have much in common.

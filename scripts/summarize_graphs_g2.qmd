@@ -1,0 +1,751 @@
+---
+title: "summarizegraphs_g2"
+output: html_document
+date: "2025-4-25"
+---
+
+```{r}
+#| code-fold: true
+library("admixtools")
+library("stringr")
+suppressWarnings(library(dplyr))
+library("readr")
+library("ggplot2")
+library("rlang")
+suppressWarnings(library(magrittr))
+```
+
+```{julia}
+#| code-fold: true
+# need to include scripts in julia if I'm running julia cells
+using CSV, DataFrames, StatsBase
+using PhyloNetworks, PhyloPlots
+```
+
+# Prepare/concatenate data before analyzing
+
+## Filter to "topgraphs" across runs & summarize iruns --> reps --> paramsets
+
+This function can be parallelized across paramsets.
+
+```{julia}
+function summarize_topgraphs(paramset_dirs::AbstractArray=filter(contains(r"\w+_\d.+"), readdir("output")))
+    for paramset in paramset_dirs
+        #initialize df to push graphs to, ONCE FILTERED across runs in same rep.
+        paramset_df = DataFrame(newick= String[], score= Float64[], hash= String[],
+            truenet= Bool[], net_hwdist= Float64[], tree_hwdist= Float64[], scorediff= Float64[],
+            h_search= Int[], h_est= Int[], ndisplayed = Int[],
+            irep= Int64[], irun=Int64[], lindist= Float64[], nind= Int[])
+        #get paramset wide values from folder name string
+        nbiallelic = parse(Int64, split(split(paramset, "_")[4], "-")[1])
+        mutrate = parse(Float64, split(split(paramset, "_")[6], "-subrate")[1]) # parse mut rate      
+        net = split(paramset, "_")[1] # parse net name
+
+        repdirs = filter(isdir, readdir(joinpath("output", paramset), join=true))
+
+        for repdir in repdirs
+            # initialize rep file
+            irep_df = DataFrame(newick= String[], score= Float64[], hash= String[],
+                truenet= Bool[], net_hwdist= Float64[], tree_hwdist= Float64[], scorediff= Float64[],
+                h_search= Int[], h_est= Int[], ndisplayed = Int[],
+                irep= Int64[], irun=Int64[], lindist= Float64[], nind= Int[])
+        
+            for irun in readdir("$repdir/graphreps")
+                irun_df = DataFrame(CSV.File("$repdir/graphreps/$irun"))  
+                #select!(irun_df, Not([:irun]))
+                # append dstat df for each rep to concat_dstat df
+                irep_df = vcat(irep_df, irun_df)
+            end #irun
+
+            #get true graph
+            truegraph = filter(:truenet => isequal(true), irep_df)
+            unique!(truegraph)
+
+            #filter out true graph (need to do this for score sorting)
+            filter!(:truenet => isequal(false), irep_df)
+
+            #fixit: think of better solution for this later
+            #hardcode excluding incomplete (bonus) h_search == 2 for `g4-lg`
+            if net == "g4-lg"
+                filter!(:h_search => !=(2), irep_df)
+            elseif net == "g4-l4-c34"
+            #hardcode excluding incomplete (bonus) h_search == 3 for `g4-l4-c34`
+                filter!(:h_search => !=(3), irep_df)
+            end
+
+            #group by h_search
+            groups_byhsearch = groupby(irep_df, [:h_search])
+            #convert subdataframes to dataframes so I can use modifying functions below
+            #have three groups for three hvals [0,1,2]
+            groups_byhsearch = [DataFrame(groups_byhsearch[1]), DataFrame(groups_byhsearch[2]), 
+                                DataFrame(groups_byhsearch[3])]
+            #clear memory for irep_df --> reinitialize
+                #data is now separated by h search val in groups_byhsearch
+            irep_df = DataFrame(newick= String[], score= Float64[], hash= String[],
+                truenet= Bool[], net_hwdist= Float64[], tree_hwdist= Float64[], scorediff= Float64[],
+                h_search= Int[], h_est= Int[], ndisplayed = Int[],
+                irep= Int64[], irun=Int64[], lindist= Float64[], nind= Int[])
+
+            for group in groups_byhsearch
+                #first sort on score, default = ascending (lowest first)
+                sort!(group, :score)
+                #keep only unique hashes
+                unique!(group, :hash)
+                #get min score
+                min_score = group.score[1] #first row will be smallest score
+                threshold_score = maximum([min_score + 10, group.score[5]])
+                #filter within that threshold score
+                group = group[group.score .<= threshold_score, :]
+                #push to df
+                append!(irep_df, group)
+            end #each h value
+
+            paramset_df = vcat(paramset_df, truegraph)
+            paramset_df = vcat(paramset_df, irep_df)
+        end #rep
+
+        # push cols for param-wide vals
+        insertcols!(paramset_df, :nbiallelic => nbiallelic) # insert as col
+        insertcols!(paramset_df, :mutrate => mutrate) # insert as col      
+        insertcols!(paramset_df, :net => net) # insert as col
+
+        # write concatenated graphs to CSV in paramset dir 
+        # (too much memory) to concat across paramsets, probably.
+        CSV.write("output/$paramset/concat_g2topgraphs_filtered.csv", paramset_df)
+
+    end #paramset
+end
+
+summarize_topgraphs()
+```
+
+## Combine paramsets
+
+```{julia}
+function concat_all_paramsets(output_dir::AbstractString, output_name::AbstractString)
+    # initialize a df
+    all_topgraphs = DataFrame(newick=String[], score=Float64[], hash=String[],
+        truenet=Bool[], net_hwdist=Float64[], tree_hwdist=Float64[], scorediff=Float64[],
+        h_search=Int[], h_est=Int[], ndisplayed=Int[], irep=Int64[], irun=Int64[],
+        lindist=Float64[], nind=Int[], nbiallelic=Int[], mutrate=Float64[], net=String[])
+
+    # get all paramset directories
+    paramset_dirs = filter(contains(r"\w+_\d.+"), readdir(output_dir))
+
+    # loop through each paramset and read the g2_topgraphs.csv
+    for paramset in paramset_dirs
+        csv_path = "$output_dir/$paramset/concat_g2topgraphs_filtered.csv"
+        if isfile(csv_path)
+            paramset_df = DataFrame(CSV.File(csv_path))
+            # concat with the all_topgraphs df
+            all_topgraphs = vcat(all_topgraphs, paramset_df)
+        end
+    end
+
+    CSV.write("$(output_dir)/$output_name", all_topgraphs)
+end
+
+concat_all_paramsets("output", "concat_g2topgraphs_filtered-june15.csv")
+```
+
+## Filter g1/g4 graphs for best case
+Do this on franklin00:
+
+```{julia}
+g14_original = DataFrame(CSV.File("output/topgraphs_filtbyirep-feb13.csv"))
+
+function bestcase_filter(nbiallelic, nind, mutrate, lindist)::Bool
+    nbi_size = nbiallelic == 100000
+    nind_size = nind == 10
+    mutrate_rate = mutrate == 1.25e-8
+    lindist_rate = lindist == 0
+    nbi_size && nind_size && mutrate_rate && lindist_rate
+end
+
+g1_bestcase = filter(:net => ==("fleg-pruned"), g14_original)
+filter!(:h_search => x -> x in (0, 1, 2), g1_bestcase) #filter to have right hvals
+g4_bestcase= filter(:net => ==("fleg"), g14_original)
+#filter for best case scenario
+filter!([:nbiallelic, :nind, :mutrate, :lindist] => bestcase_filter, g1_bestcase)
+filter!([:nbiallelic, :nind, :mutrate, :lindist] => bestcase_filter, g4_bestcase)
+#join dfs together vertically
+g14_bestcase = vcat(g1_bestcase, g4_bestcase)
+
+#remove paramid col
+select!(g14_bestcase, Not([:paramid]))
+
+#rename nets to be consistent
+replace!(g14_bestcase.net, "fleg" => "g4-sg")
+replace!(g14_bestcase.net, "fleg-pruned" => "g1-lg")
+
+#write csv out
+CSV.write("output/g14_bestcase_allnets.csv", g14_bestcase)
+```
+
+move from franklin00 to 01:
+```{bash}
+scp output/g14_bestcase_allnets.csv lefrankel@franklin01.stat.wisc.edu:/nobackup2/lefrankel/f4-ratevar/output/
+```
+
+# Analyze data
+
+Alright, now we should have data for the 16 additional topologies,
+and they should be filtered already across runs (excluding duplicates, 
+keeping 5 graphs minimum, or within 10 ll score pts) in each replicate.
+Data is at `nobackup2/lefrankel/f4-ratevar/output/concat_g2topgraphs_filtered.csv`
+and `nobackup2/lefrankel/f4-ratevar/output/g14_bestcase_allnets.csv.csv`
+both on franklin01.
+
+Of note, will need to filter incomplete (bonus) `h_search == 2` on g4-lg. 
+
+```{r}
+g2_topgraphs = read_csv("output/concat_g2topgraphs_filtered-june15_ngraphsfix.csv")
+
+# make sure each col is treated as factor
+g2_topgraphs$lindist = as.factor(g2_topgraphs$lindist)
+g2_topgraphs$nind = as.factor(g2_topgraphs$nind)
+g2_topgraphs$h_search = as.factor(g2_topgraphs$h_search)
+g2_topgraphs$h_est = as.factor(g2_topgraphs$h_est)
+g2_topgraphs$mutrate = as.factor(g2_topgraphs$mutrate)
+g2_topgraphs$nbiallelic = as.factor(g2_topgraphs$nbiallelic)
+```
+
+will need to rename `net` values for old `g2` nets, and should not make it a factor just yet:
+
+```{r}
+unique(g2_topgraphs$net)
+```
+ [1] "g1-l1-c3"  "g1-sg"     "g2-l1-c33" "g2-l1-c43" "g2-l1-c4"  "g2-l1-c5" 
+ [7] "g2-l2-c4"  "g2-l2-c6"  "g2-l2-ntc" "g2-l2-ng4" "g2-l2-ng6" "g3-l3-c44"
+[13] "g3-ntc"    "g3-tc"     "g4-l4-c34" "g4-lg"
+
+```{r}
+                              #old name      #new name
+g2_topgraphs[g2_topgraphs == "g2-l1-c4"] = "g2-l1-c44"
+g2_topgraphs[g2_topgraphs == "g2-l1-c5"] = "g2-l1-c45"
+g2_topgraphs[g2_topgraphs == "g2-l2-c4"] = "g2-l2-g33"
+g2_topgraphs[g2_topgraphs == "g2-l2-c6"] = "g2-l2-g46"
+g2_topgraphs[g2_topgraphs == "g2-l2-ntc"] = "g2-l2-n04"
+g2_topgraphs[g2_topgraphs == "g2-l2-ng4"] = "g2-l2-n44"
+g2_topgraphs[g2_topgraphs == "g2-l2-ng6"] = "g2-l2-n46"
+g2_topgraphs[g2_topgraphs == "g3-l3-c44"] = "g3-l3-c54"
+
+unique(g2_topgraphs$net)
+```
+ [1] "g1-l1-c3"  "g1-sg"     "g2-l1-c33" "g2-l1-c43" "g2-l1-c44" "g2-l1-c45"
+ [7] "g2-l2-g33" "g2-l2-g46" "g2-l2-n04" "g2-l2-n44" "g2-l2-n46" "g3-l3-c54"
+[13] "g3-ntc"    "g3-tc"     "g4-l4-c34" "g4-lg"
+
+good! let's convert to factor now.
+
+```{r}
+g2_topgraphs$net = as.factor(g2_topgraphs$net)
+```
+
+## fixit: Sanity checks
+
+Sanity checks from last time:
+1. No reps `h_search` irun totals less than 50 (unless `g4-lg` `h_search == 2`)
+2. At least 5 graphs per irun
+3. No duplicate rows
+
+I've already filtered, so these sanity checks should have been done before. fixit: transfer to bash commands?
+
+*** reminder, need to filter out true graphs ***
+
+### At least 5 graphs per net/replicate/h_val combo
+
+```{r}
+summary_ngraphs = g2_topgraphs %>%
+  filter(truenet == FALSE) %>%
+  group_by(net, irep, h_search) %>%
+  summarize(net        = first(net),
+            h_search   = first(h_search),
+            irep       = first(irep),
+            ngraphs    = n()) 
+
+min(summary_ngraphs$ngraphs) #5
+```
+
+Great, the minimum number of graphs is 5 per net/replicate/h_val.
+
+Let's see what the average amount of graphs is per `net` + `h_search` combo:
+```{r}
+summary_ngraphs %>%
+  group_by(net, h_search) %>%
+  summarize(net             = first(net),
+            h_search        = first(h_search),
+            mean_ngraphs    = mean(ngraphs),
+            min_ngraphs     = min(ngraphs),
+            max_ngraphs     = max(ngraphs)) 
+```
+
+ A tibble: 48 × 5
+ Groups:   net [16]
+   net       h_search mean_ngraphs min_ngraphs max_ngraphs
+   <fct>     <fct>           <dbl>       <int>       <int>
+ 1 g1-l1-c3  0                  5            5           5
+ 2 g1-l1-c3  1                119.          13         127
+ 3 g1-l1-c3  2               2103.         604        2908
+ 4 g1-sg     0                  5            5           5
+ 5 g1-sg     1                119.          18         127
+ 6 g1-sg     2               2043.         157        2949
+ 7 g2-l1-c33 0                  5            5           5
+ 8 g2-l1-c33 1                122.          34         126
+ 9 g2-l1-c33 2               2072.         296        2825
+10 g2-l1-c43 0                  5            5           5
+ ℹ 38 more rows
+ ℹ Use `print(n = ...)` to see more rows
+
+Great, this is in line what we had before, where `h_search` == 0 usually had 5 graphs
+(the minimum), then proceeded to increased with each h-val. 
+
+Get total number of graphs: (true graphs & repeats are filtered out)
+```{r}
+sum(summary_ngraphs$ngraphs) #1,227,858
+max(summary_ngraphs$ngraphs) #2,949
+```
+
+### Duplicate rows
+
+```{r}
+duplicated_rows = g2_topgraphs %>%
+  group_by_all() %>%
+  filter(n() > 1) %>%
+  ungroup()
+```
+
+> duplicated_rows
+ A tibble: 0 × 17
+ ℹ 17 variables: newick <chr>, score <dbl>, hash <chr>, truenet <lgl>,
+   net_hwdist <dbl>, tree_hwdist <dbl>, scorediff <dbl>, h_search <fct>,
+   h_est <fct>, ndisplayed <dbl>, irep <dbl>, irun <dbl>, lindist <fct>,
+   nind <fct>, nbiallelic <fct>, mutrate <fct>, net <fct>
+
+Beautiful! No duplicated rows.
+
+## Join g1/g4 best case graphs with all the alternative topologies
+Do this before filtering to save myself pain of trying to filter these graphs in an equivalent manner to how I will do so later.
+
+```{r}
+g14_bestcase = read.csv("output/g14_bestcase_allnets.csv")
+
+#combine g1/g4 best case with new simulated nets (only sim'ed under best case param values)
+allgraphs_bynet      = rbind(g2_topgraphs, g14_bestcase)
+#drop columns that I don't need (these values are all the same)
+allgraphs_bynet = subset(allgraphs_bynet, select = -c(lindist, nind, mutrate, nbiallelic))
+```
+
+## Create `ishashmatch` col
+
+```{r}
+#get hashes of true graphs
+true_hashes = allgraphs_bynet %>% 
+    filter(truenet == TRUE) %>% 
+    group_by(net) %>%
+    summarize(hash = first(hash))
+
+#missing the true hashes for original g1/g4 bc I filtered out the true nets
+#add those rows
+originalhash = data.frame(net=c('g1-lg', 'g4-sg'), 
+                               hash=c('0ba4c049b40b2cc83a8822676c1d33aa', 'b66401d14d13e41dfd92363767147547'))
+true_hashes = rbind(true_hashes, originalhash)
+
+#left join g2_topgraphs (keeping columns from g2_topgraphs) with true_hashes table 
+    #using hash and net columns as key
+    #if match from table above --> ishashmatch == TRUE
+    #if not a match --> is hashmatch == FALSE
+#create `ishashmatch` column
+allgraphs_bynet = allgraphs_bynet %>%
+  left_join(true_hashes %>% mutate(ishashmatch = TRUE), by = c("net", "hash")) %>%
+  mutate(ishashmatch = ifelse(is.na(ishashmatch), FALSE, ishashmatch))
+
+#convert to boolean (why was it not before? idk)
+allgraphs_bynet$truenet = as.logical(allgraphs_bynet$truenet)
+```
+
+## Join with net properties
+
+Add in net properties, which will help us visualize:
+
+```{r}
+net_properties = read.csv("input/pop-net-properties.csv")
+allgraphs_bynet = left_join(allgraphs_bynet, net_properties, by = "net")
+
+#make other cols as factor
+allgraphs_bynet$level               = as.factor(allgraphs_bynet$level)
+allgraphs_bynet$num_dtrees          = as.factor(allgraphs_bynet$num_dtrees)
+allgraphs_bynet$num_mincyclesize3   = as.factor(allgraphs_bynet$num_mincyclesize3)
+allgraphs_bynet$gamma               = as.factor(allgraphs_bynet$gamma)
+```
+
+## Summarize graphs, keeping 5 min. or with 10 ll score pts
+### Define functions for summarizing by irep & paramset
+
+```{r}
+summarize_byirep = function(df){
+  df %>% 
+  group_by(irep, net, h_search) %>% 
+  filter(!truenet) %>% 
+  summarize(net = first(net),
+            trueh = first(trueh), #can take first of these since these are truenet-specific properties
+            level = first(level), 
+            num_dtrees = first(num_dtrees),
+            num_mincyclesize3 = first(num_mincyclesize3),
+            gamma = first(gamma),
+            ngraphs = n(), #ngraphs in rep/net/h, should be 5 min. per irun * 50 iruns = 250 min (before filtering)
+            min_nethw = min(net_hwdist),
+            atleastonehashmatch = any(ishashmatch), 
+            min_treehw = min(tree_hwdist),
+            max_ndisplayed = max(ndisplayed),
+            mean_ndisplayed = mean(ndisplayed),
+            #scorediff = truenet - estnet
+            # score is proportional to negative loglikelihood (sum of squares)
+            # smaller is better, so max(scorediff) = score(truenet) - min(score(estnet))
+            #  = score(truenet) - best score of all top graphs
+            relativell = max(scorediff),
+            .groups="drop")
+}
+
+groupgraphs = function(dat){
+ dat %>% group_by(net, h_search) %>%
+  summarize(net = first(net),
+            trueh = first(trueh), #can take first of these since these are truenet-specific properties
+            level = first(level), 
+            num_dtrees = first(num_dtrees),
+            num_mincyclesize3 = first(num_mincyclesize3),
+            gamma = first(gamma),
+            prop_min_nethw_eq_0 = mean(!!sym("min_nethw") == 0), # proportion of replicates that have at least 1 perfect graph
+            prop_min_hashmatch = mean(atleastonehashmatch),
+            prop_min_treehw_eq_0 = mean(!!sym("min_treehw") == 0), # proportion of replicates that have at least 1 perfect graph
+            avgngraphsperrep = sum(ngraphs)/100,
+            prop_max_ndisp_eq_2 = mean(!!sym("max_ndisplayed") == 2),
+            .groups="drop")
+}
+```
+
+### Write summarized dfs to csv
+
+Summaries for all graphs that fell within our filtering threshold (very lenient):
+```{r}
+#row for each replicate
+g2_byirep = summarize_byirep(allgraphs_bynet) 
+write.csv(g2_byirep, file="output/topgraphs_byrep_filtered-june27.csv", row.names = FALSE)
+#row for each paramset
+g2_byparamset = groupgraphs(g2_byirep)
+write.csv(g2_byparamset, file="output/topgraphs_byparamset_filtered-june27.csv", row.names = FALSE)
+```
+
+## Try analyzing data by alternative filtering schemes
+
+Set up filtering functions:
+```{r}
+#give ngraphs value as how many graphs from topscoring to include
+filterdf_byngraph = function(df, ngraphs){
+    df %>% 
+    filter(!truenet) %>% #don't include true net
+    group_by(irep, net, h_search) %>% 
+    arrange(score) %>% #ascending by default, so smallest score first 
+    slice_head(n = ngraphs)
+}
+
+#this will keep 5 graphs minimum, if there are not 5 graphs that fall within
+    #3 ll score pts from best scoring graph
+filterdf_byscore = function(df, scorethreshold){
+    df %>% 
+    filter(!truenet) %>% #don't include true net
+    group_by(irep, net, h_search) %>% 
+    arrange(score, .by_group = TRUE) %>%
+    mutate(row_num = row_number(),
+          min_score = first(score),  #minimum score within each group
+          threshold_score = max(min_score + scorethreshold, nth(score, 5, order_by = score))) %>%
+    filter(score <= threshold_score) %>%
+    select(-row_num, -min_score, -threshold_score) %>%
+    ungroup()
+}
+```
+
+### Write alternative filtering schemes to csv
+Apply filtering functions & write out csvs:
+```{r}
+topgraphs_1graphperrep = filterdf_byngraph(allgraphs_bynet, 1)
+topgraphs_5graphsperrep = filterdf_byngraph(allgraphs_bynet, 5)
+topgraphs_3scorethresh = filterdf_byscore(allgraphs_bynet, 3)
+
+datasets = list(
+  "1graph" = topgraphs_1graphperrep,
+  "5graphs" = topgraphs_5graphsperrep,
+  "3thresh" = topgraphs_3scorethresh
+)
+
+lapply(names(datasets), function(key) {
+  byirep = summarize_byirep(datasets[[key]])
+  write.csv(byirep, file = paste0("output/topgraphs_", key, "_byirep-june27.csv"), row.names = FALSE)
+  
+  byparamset = groupgraphs(byirep)
+  write.csv(byparamset, file = paste0("output/topgraphs_", key, "_byparamset-june27.csv"), row.names = FALSE)
+})
+```
+
+Now, I can transfer these summary files locally from franklin.
+
+# Visualize results
+
+Do locally after downloading paramset & replicate summaries.
+
+## Load in dfs locally
+
+Let's convert everything to factor, to help with visualization.
+```{r}
+topgraphs_original = read.csv("output/topgraphs_byparamset_filtered-june27.csv")
+topgraphs_1graphperrep  = read.csv("output/topgraphs_1graph_byparamset-june27.csv")
+topgraphs_5graphsperrep = read.csv("output/topgraphs_5graphs_byparamset-june27.csv")
+topgraphs_3scorethresh  = read.csv("output/topgraphs_3thresh_byparamset-june27.csv")
+
+#filter nets to only include correct h_search values in a loop:
+dataframes_dict = list(
+  topgraphs_original = topgraphs_original,
+  topgraphs_1graphperrep = topgraphs_1graphperrep,
+  topgraphs_5graphsperrep = topgraphs_5graphsperrep,
+  topgraphs_3scorethresh = topgraphs_3scorethresh
+)
+
+#filter dataframes 
+filtered_dfs = lapply(dataframes_dict, function(df) {
+  subset(df, h_search == trueh)
+})
+
+#name the filtered dfs "_truehsearch" suffix
+names(filtered_dfs) = paste0(names(filtered_dfs), "_truehsearch")
+
+#assign each df in filtered_dfs as a variable in the global environment
+list2env(filtered_dfs, envir = .GlobalEnv)
+
+# cols to convert to factors
+factor_columns = c("net", "h_search", "level", "num_dtrees", "num_mincyclesize3", "gamma")
+
+# create a list of all dataframes
+dataframes = list(topgraphs_original, topgraphs_original_truehsearch,
+                  topgraphs_1graphperrep, topgraphs_1graphperrep_truehsearch,
+                  topgraphs_5graphsperrep, topgraphs_5graphsperrep_truehsearch,
+                  topgraphs_3scorethresh, topgraphs_3scorethresh_truehsearch)
+
+# apply factor conversion for specified columns in each dataframe
+dataframes = lapply(dataframes, function(df) {
+  df[factor_columns] <- lapply(df[factor_columns], as.factor)
+  return(df)
+})
+
+list2env(setNames(dataframes, c("topgraphs_original", "topgraphs_original_truehsearch",
+                                "topgraphs_1graphperrep", "topgraphs_1graphperrep_truehsearch",
+                                "topgraphs_5graphsperrep", "topgraphs_5graphsperrep_truehsearch",
+                                "topgraphs_3scorethresh", "topgraphs_3scorethresh_truehsearch")), 
+                                envir = .GlobalEnv)
+```
+
+## Set up plotting formulas
+
+```{r}
+levelcols = c('#4CC9F0', '#7685F8', '#B450F7', '#B30F46')
+gammacols = c('#F8766D', '#619CFF')
+gammatransparency = c(0.8, 0.35)
+isomorphism_labeller = as_labeller(c(`1` = " g1 \n h=1",
+                                      `4` = " g4 \n h=4"))
+gamma_labeller = as_labeller(c(`small` = " one 6%",
+                                `large` = " all in [32%, 68%]"))
+
+plot_graphs_point_pct_gammas = function(dat, yvar, xlab = "search h", ylab, xlabels= waiver(), subtitle, seed){
+  ggplot(dat, aes(.data[["h_search"]], .data[[yvar]])) +
+  geom_point(aes(color=gamma),
+      alpha=0.7, stroke=0.6,
+      position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.4), size=4) +
+  scale_color_manual(values=gammacols, labels=gamma_labeller)+
+  scale_x_discrete(labels= xlabels)+
+  scale_y_continuous(labels = scales::percent)+
+  guides(color = guide_legend(order=2, title="admixture strength")) + 
+  theme_minimal() + 
+  theme(legend.position= "bottom", 
+        legend.title.position = "left",
+        legend.title = element_text(size=8),
+        legend.text = element_text(size=6.5),
+        legend.key.width = unit(0.1, 'cm'),
+        legend.justification = c(1,0),
+        panel.border = element_rect(linetype = "solid", fill = NA)) +
+  ylab(ylab) +
+  xlab(xlab) +
+  labs(subtitle = subtitle)
+}
+
+plot_mincycle3_scaledbyngraphs = function(dat, yvar, xlab = "search h", ylab, subtitle, seed){
+  ggplot(dat, aes(.data[["num_mincyclesize3"]], .data[[yvar]])) +
+  geom_point(aes(color = level, alpha = gamma, fill = level, size= avgngraphsperrep),
+      stroke=0.6,
+      position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.4)) +
+  geom_text(aes(label = ifelse(level != trueh, as.character(trueh), ''), linetype = level),
+            #need to feed some argument to aes that includes level so it uses jitterdodge
+            #doesn't actually do anything with linetype, esp. since all the geom_text have same level
+            alpha = 1, color = "black",
+            #set to be the same jitterdodge settings as above so they theoretically line up
+            position = position_jitterdodge(seed = seed, jitter.width = 0.3, dodge.width = 0.4),
+            size = 2.5, vjust = .5, hjust = .75, show.legend = FALSE) +
+  scale_color_manual(values=levelcols, labels=c("1","2","3","4"),
+    aesthetics = c("colour", "fill")) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1))+
+  scale_alpha_manual(values=gammatransparency, labels = gamma_labeller) +
+  scale_size("number of graphs", breaks = c(100,500,1000,2000)) +
+  guides(
+    color = guide_legend(order=1, title="level"),
+    alpha = guide_legend(order=2, title="admixture strength",
+        override.aes=list(color='#000000')),
+    size = guide_legend(order = 3, title = "average number of graphs across replicates"),
+    fill = "none") + 
+  theme_minimal() + 
+  theme(legend.position= "bottom", 
+        legend.box = "horizontal",
+        legend.box.just = "center",
+        legend.title.position = "top",
+        legend.title = element_text(size=7, hjust=0.5),
+        legend.text = element_text(size=6),
+        legend.key.width = unit(0.1, 'cm'),
+        panel.border = element_rect(linetype = "solid", fill = NA)) +
+  ylab(ylab) +
+  xlab(xlab) +
+  labs(subtitle = subtitle) 
+}
+
+plot_mincycle3_ptlabelled = function(dat, yvar, xlab = "search h", ylab, subtitle, seed){
+  ggplot(dat, aes(.data[["num_mincyclesize3"]], .data[[yvar]])) +
+  geom_point(aes(color = level, alpha = gamma, fill = level, size= ngraphs),
+      stroke=0.6,
+      position=position_jitterdodge(seed=seed,
+                  jitter.width=0.3, dodge.width=0.4), size=4) +
+  geom_text(aes(label = ifelse(level != trueh, as.character(trueh), ''), linetype = level),
+            #need to feed some argument to aes that includes level so it uses jitterdodge
+            #doesn't actually do anything with linetype, esp. since all the geom_text have same level
+            alpha = 1, color = "black",
+            #set to be the same jitterdodge settings as above so they theoretically line up
+            position = position_jitterdodge(seed = seed, jitter.width = 0.3, dodge.width = 0.4),
+            size = 2.5, vjust = .5, hjust = .75, show.legend = FALSE) +
+  scale_color_manual(values=levelcols, labels=c("1","2","3","4"),
+    aesthetics = c("colour", "fill")) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1))+
+  scale_alpha_manual(values=gammatransparency, labels = gamma_labeller) +
+  guides(
+    color = guide_legend(order=1, title="level"),
+    alpha = guide_legend(order=2, title="admixture strength",
+        override.aes=list(fill='#000000',color='#000000')),
+    fill = "none") + 
+  theme_minimal() + 
+  theme(legend.position= "bottom", 
+        legend.box = "horizontal",
+        legend.box.just = "center",
+        legend.title.position = "left",
+        legend.title = element_text(size=7),
+        legend.text = element_text(size=6),
+        legend.key.width = unit(0.1, 'cm'),
+        legend.justification = c(1,0),
+        panel.border = element_rect(linetype = "solid", fill = NA)) +
+  ylab(ylab) +
+  xlab(xlab) +
+  labs(subtitle = subtitle)
+}
+```
+
+## Visualize small gamma vs. large gamma
+
+```{r}
+#filter for our nets in question
+gammadf = topgraphs_original_truehsearch %>%
+    filter(net == "g1-sg" | net == "g1-lg" | net == "g4-sg" | net == "g4-lg")
+
+#convert to string so we can modify net names
+gammadf$net      = as.character(gammadf$net)
+
+#convert net names to be the same so we can use them as factors
+gammadf[gammadf == "g4-sg"] = "g4"
+gammadf[gammadf == "g4-lg"] = "g4"
+gammadf[gammadf == "g1-sg"] = "g1"
+gammadf[gammadf == "g1-lg"] = "g1"
+gammadf$net      = as.factor(gammadf$net)
+
+plot_graphs_point_pct_gammas(gammadf, yvar = "prop_min_hashmatch", 
+  ylab = "accuracy",
+  xlab = "network / search h",
+  xlabels = isomorphism_labeller,
+  subtitle = "",
+  seed = 127)
+ggsave("figures/fig_gammacomp.pdf", height=3.5, width=4.5)
+```
+
+## Visualize effect of (min.) cycle size
+
+### Scale by number of graphs on original filtering scheme
+
+```{r}
+min(topgraphs_original_truehsearch$avgngraphsperrep) #26.89
+max(topgraphs_original_truehsearch$avgngraphsperrep) #2072.4
+
+plot_mincycle3_scaledbyngraphs(topgraphs_original_truehsearch, yvar = "prop_min_hashmatch", 
+  ylab = "% replicates with the true network in its set of top graphs", #changed to "accuracy" in ppts
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "",
+  seed = 16)
+ggsave("figures/fig_mincyclesize_iso.pdf", height=5, width=6)
+
+plot_mincycle3_scaledbyngraphs(topgraphs_original_truehsearch, yvar = "prop_min_nethw_eq_0", 
+  ylab = "% replicates with closest top graph at distance 0", 
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "",
+  seed = 16)
+ggsave("figures/fig_mincyclesize_hw.pdf", height=5, width=6)
+```
+
+### Visualize for alternative filtering schemes
+```{r}
+plot_mincycle3_ptlabelled(topgraphs_1graphperrep_truehsearch, yvar = "prop_min_hashmatch", 
+  ylab = "% replicates with the true network in its set of top graphs",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining only the highest scoring graph per replicate",
+  seed = 22)
+ggsave("figures/fig_mincyclesize_iso_1graphperrep.pdf", height=5, width=6)
+
+plot_mincycle3_ptlabelled(topgraphs_1graphperrep_truehsearch, yvar = "prop_min_nethw_eq_0", 
+  ylab = "% replicates with closest top graph at distance 0",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining only the highest scoring graph per replicate",
+  seed = 22)
+ggsave("figures/fig_mincyclesize_hw_1graphperrep.pdf", height=5, width=6)
+
+plot_mincycle3_ptlabelled(topgraphs_5graphsperrep_truehsearch, yvar = "prop_min_hashmatch", 
+  ylab = "% replicates with the true network in its set of top graphs",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining only the 5 highest scoring graphs per replicate",
+  seed = 40)
+ggsave("figures/fig_mincyclesize_iso_5graphsperrep.pdf", height=5, width=6)
+
+plot_mincycle3_ptlabelled(topgraphs_5graphsperrep_truehsearch, yvar = "prop_min_nethw_eq_0", 
+  ylab = "% replicates with closest top graph at distance 0",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining only the 5 highest scoring graphs per replicate",
+  seed = 40) #27, 29
+ggsave("figures/fig_mincyclesize_hw_5graphsperrep.pdf", height=5, width=6)
+
+min(topgraphs_3scorethresh_truehsearch$avgngraphsperrep) #8.96 graphs
+max(topgraphs_3scorethresh_truehsearch$avgngraphsperrep) #565.84 graphs
+
+plot_mincycle3_scaledbyngraphs(topgraphs_3scorethresh_truehsearch, yvar = "prop_min_hashmatch", 
+  ylab = "% replicates with the true network in its set of top graphs",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining graphs scoring within 3 of the best score, or 5 min. graphs",
+  seed = 33) #3, 27
+ggsave("figures/fig_mincyclesize_iso_3scorethresh.pdf", height=5, width=6)
+
+plot_mincycle3_scaledbyngraphs(topgraphs_3scorethresh_truehsearch, yvar = "prop_min_nethw_eq_0", 
+  ylab = "% replicates with closest top graph at distance 0",
+  xlab = "# hybridizations with minimum cycle size of 3",
+  subtitle = "retaining graphs scoring within 3 of the best score, or 5 min. graphs",
+  seed = 33)
+ggsave("figures/fig_mincyclesize_hw_3scorethresh.pdf", height=5, width=6)
+```

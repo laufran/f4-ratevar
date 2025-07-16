@@ -2,7 +2,7 @@
 
 Code to reproduce the simulation study in: Frankel & Ané (2025) "Low accuracy of complex admixture graph inference from f-statistics".
 
-Preprint available here: <https://www.biorxiv.org/content/10.1101/2025.03.07.642126v1>
+Preprint available here: <https://www.biorxiv.org/content/10.1101/2025.03.07.642126v2>
 
 ## goal and model
 
@@ -21,6 +21,4 @@ or a reduction in power?
 - seqgen for the simulation of sequences: Seq-Gen v1.3.4 downloaded from
   [github](git@github.com:rambaut/Seq-Gen.git) at [commit from 2019-08-29](https://github.com/rambaut/Seq-Gen/commit/e8660d73769297d25a88b40d5b828a6fce7784b5).
 - R packages:
-  - [SiPhyNetwork](https://github.com/jjustison/SiPhyNetwork) version 1.1.0,
-     see [notes/software_install.md](notes/software_install.md#siphynetwork---done-on-franklin)
   - [admixtools](https://github.com/uqrmaie1/admixtools), see [notes/software_install.md](notes/software_install.md#admixtools---done-on-franklin)

@@ -1,12 +1,10 @@
 #= 
 code to simulate data:
-1. `simulatenetwork`: simulate networks using SiPhyNetwork (via RCall)
-2. `scale_network`: scale network to control the amount of ILS
-3. `simulategenetrees`: simulate gene trees within a network, using PhyloCoalSimulations, 
+1. `simulategenetrees`: simulate gene trees within a network, using PhyloCoalSimulations, 
     and simulate lineage-rate variation if applicable. if given a simulated network,
     scale # of generations from the ingroup crown to the ingroup taxa to be the same 
     across all generated networks
-4. `sim_snps`: simulates SNPs from gene trees, using seqgen
+2. `sim_snps`: simulates SNPs from gene trees, using seqgen
 
 code to analyze simulated data & helper functions:
     - `save_lineagerates`: write lineage rates simulated in `simulategenetrees`
@@ -25,7 +23,6 @@ import the file to use its functions:
 using Random
 using PhyloNetworks
 using PhyloCoalSimulations
-using RCall
 using Distributions
 using CSV
 using DataFrames
@@ -50,32 +47,8 @@ else
 end
 ispath(seqgen) || error("can't find seqgen at $seqgen")
 
-# R"install.packages('devtools')"
-# R"require(devtools)";
-# R"devtools::install_github('jjustison/SiPhyNetwork')";
-# R"devtools::install_github('uqrmaie1/admixtools')";
-# use 10 as the precision for the disribution of γ values
-# setting genetic distance function using example values
-R"require(ape, quietly=T)";
-R"require(SiPhyNetwork, quietly=T)";
-R"require(admixtools, quietly=T)";
-R"inheritance_fxn <- make.beta.draw(2, 2)";
-R"gen_dist_fxn = make.stepwise(probs = c(1,0),distances = c(0.75,Inf))";
-hybridproportions = [0.5,0.25,0.25]  # generative, degenerative, neutral
-@rput hybridproportions
-
 using Pkg
-Pkg.status(["PhyloNetworks","RCall","PhyloCoalSimulations"]);
-R"rversion <- R.Version()$version.string";
-@rget(rversion);
-R"spnversion <- sessionInfo(package='SiPhyNetwork')$otherPkgs$SiPhyNetwork$Version";
-R"spnsha     <- sessionInfo(package='SiPhyNetwork')$otherPkgs$SiPhyNetwork$RemoteSha";
-@rget(spnversion);
-@rget(spnsha);
-R"admixversion <- sessionInfo(package='admixtools')$otherPkgs$admixtools$Version";
-R"admixsha     <- sessionInfo(package='admixtools')$otherPkgs$admixtools$RemoteSha";
-@rget(admixversion);
-@rget(admixsha);
+Pkg.status(["PhyloNetworks","PhyloCoalSimulations"]);
 python_version = ""
 try
     global python_version = readchomp(`python --version`)
@@ -83,246 +56,8 @@ catch _
     @warn "'python' not in your path"
 end
 print("""julia version: $VERSION
-      $rversion
-      SiPhyNetwork version: v$spnversion
-      SiPhyNetwork commit sha: $spnsha
-      admixtools version: v$admixversion
-      admixtools commit sha: $admixsha
       Python version: $python_version
       """)
-
-"""
-    simulatenetwork(ntaxa::Int, nsims::Int)
-
-calls `simulatenetwork(ntaxa)` many times, to simulate `nsims` networks
-and return them as a tuple with vector of `HybridNetworks` and a vector of 
-levels of the networks. The keyword arguments are passed, except for the seed. 
-"""
-function simulatenetwork(ntaxa::Int, nsims::Int; seed=nothing, kwargs...)
-    nets = HybridNetwork[]
-    levels = Int[]
-    if isnothing(seed)
-        seed = rand(1:10000)
-        @info "seed for the generation of random seeds: $seed"
-    end
-    Random.seed!(seed)
-    s = rand(1:100_000, nsims) # each s value will be used as a seed within R for 1 network
-    for i in 1:nsims
-        n, l = simulatenetwork(ntaxa; seed = s[i], kwargs...)
-        push!(nets, n)
-        push!(levels, l)
-    end
-    return nets, levels
-end
-
-"""
-    simulatenetwork(ntaxa::Int, file::AbstractString; seed=nothing,
-        lambda=1, mu=0.2, nu=0.2,
-        shrink=true, hmin=1, hmax=ntaxa/2, levelmax=hmax)
-
-Simulate 1 network using SiPhyNetwork repeatedly until the network
-satisfies the filters, append it to `file` and return it as a tuple of 
-`HybridNetwork` and level of network.
-
-The filters are:
-- exclude networks with fewer than `hmin` reticulations (trees by default)
-- exclude networks with more than `hmax` reticulations
-- exclude networks of level higher than `levelmax`
-
-Before checking the level, there is the option to `shrink` 2-cycles and 3-cycles
-(which are not detectable by the ABBA-BABA test or by SNaQ).
-
-By default, the seed is not controlled. Otherwise, it is passed to R to seed
-the random number generator for the SiPhyNetwork simulation.
-
-external variables (which could be turned into options):
-- proportion of the 3 kinds of reticulations: `hybridproportions`
-- distribution of γs: R function `inheritance_fxn`
-- probability that a proposed hybridization is successful, given the
-  average genetic distance between the 2 taxa: R function `gen_dist_fxn`
-
-# example
-
-```repl
-julia> network, level = simulatenetwork(7, file="test.phy", seed=121, verbose=false)
-
-julia> network
-HybridNetwork, Rooted Network
-15 edges
-15 nodes: 7 tips, 1 hybrid nodes, 7 internal tree nodes.
-tip labels: t7, t10, t9, t12, ...
-((((t7:0.018,t10:0.018)I1:0.358,#H15:0.0::0.155)I2:0.195,(t9:0.376,(t12:0.376)#H15:0.0::0.845)I3:0.195)I4:0.984,((t5:0.011,t6:0.011)I5:0.374,t1:0.385)I6:1.17)I7;
-
-julia> level
-1
-```
-
-R example with dangling nodes, errors with write.net etc:
-```r
-require(SiPhyNetwork)
-inheritance_fxn = make.beta.draw(10,10)
-hybridproportions = c(0.5,0.25,0.25)
-set.seed(5282)
-net <- sim.bdh.taxa.ssa(n=17, numbsim=1,
-    lambda=1,mu=0.2, nu=0.8, hybprops=hybridproportions,
-    hyb.inher.fxn = inheritance_fxn)[[1]]
-write.net(net, digits=1)
-
-library(SiPhyNetwork)
-gen_dist_fxn = make.stepwise(probs = c(1,0),distances = c(0.75,Inf))
-set.seed(16)
-net <- sim.bdh.taxa.ssa(n=4, numbsim=1,
-    lambda=1, mu=0.2, nu=0.3, hybprops=c(0.5,0.25,0.25),
-    hyb.rate.fxn = gen_dist_fxn, hyb.inher.fxn = make.beta.draw(2,2), complete=FALSE)[[1]]
-write.net(net, tol=1e-12)
-
-# how to find a seed for a minimal working example:
-for (i in 1:1000){
-  cat("i =",i,"\n")
-  set.seed(i)
-  net <- sim.bdh.taxa.ssa(n=4, numbsim=1,
-    lambda=1, mu=0.2, nu=0.3, hybprops=c(0.5,0.25,0.25),
-    hyb.rate.fxn = gen_dist_fxn, hyb.inher.fxn = make.beta.draw(2,2), complete=FALSE)[[1]]
-  if (length(net) < 2){
-    cat("went extinct\n")
-    next
-  }
-  write.net(net, tol=1e-12)
-}
-```
-"""
-function simulatenetwork(ntaxa::Int; file=nothing, seed=nothing,
-        lambda=1, mu=0.2, nu=0.3,
-        shrink=true, hmin=1, hmax=ntaxa/2, levelmax=hmax, verbose=true)
-    levelmax>0 || error("a non-tree network must have level 1 or more")
-    hmin <= hmax || error("hmin may not be higher than hmax")
-    isnothing(seed) || R"set.seed"(seed)
-    net = nothing
-    level = nothing
-    for i in 1:1000
-        i += 1
-        R"""
-        net <- sim.bdh.taxa.ssa(n=$ntaxa, numbsim=1,
-            lambda=$lambda, mu=$mu, nu=$nu, hybprops=hybridproportions,
-            hyb.rate.fxn = gen_dist_fxn, hyb.inher.fxn = inheritance_fxn, complete = FALSE)[[1]]
-        """
-        # continue to next iteration if the lineage went completely extinct
-        rcopy(R"length(net) > 1") || continue
-        # convert R network to Julia network
-        net_string = rcopy(R"write.net(net, tol=1e-12)")
-        net = readTopology(net_string)
-        shrink && PhyloNetworks.shrink3cycles!(net)
-        h = net.numHybrids
-        (h>=hmin && h<=hmax) || continue # to next iteration if h outside range
-        bi = PhyloNetworks.blobInfo(net)[3]
-        level = maximum(length.(bi))
-        level <= levelmax || continue
-        verbose && @info "$i iterations, level=$level"
-        break
-    end
-    PhyloNetworks.nameinternalnodes!(net, "I") # to get be able to map internal node names in gene trees later
-    isnothing(file) || writeTopology(net, file; append=true)
-    return net, level
-end
-
-"""
-    scale_network(net::HybridNetwork, file, med_coal_unit::AbstractFloat)
-
-Given a network `net`, median coalescent unit to scale all branches to `med_coal_unit`,
-and file path to write network to `file`, `scale_network` scales all branch lengths
-in `net` by float `scaler` and writes to `file`.
-The goal is to control the amount of ILS.
-The amount of substitutions is controlled later.
-"""
-function scale_network(net::HybridNetwork, file, med_coal_unit::AbstractFloat)
-    open(file, "w") do fout
-        scaler = med_coal_unit / median([e.length for e in net.edge])
-        for e in net.edge
-            e.length *= scaler
-        end
-        writeTopology(net, fout)
-    end # close file cleanly
-    return net
-end
-
-"""
-    simulategenetrees_coalescentunits(net, nloci, genefile;
-        lineage_distribution, nodemapping=false, nsites=1)
-
-**Not used so far. May be used when networks are simulated at random.
-Delete if we end up not using this at all.**
-
-Simulate `nloci` gene trees (1 individual/species) along `net`
-using PhyloCoalSimulations, assuming that edge lengths are in coalescent units.
-The gene trees with branch lengths in coalescent units are written to file
-"`genefile`_coal_unit". These gene trees have extra degree-2 nodes to map
-them into the species network.
-
-The model for rate variation is as follows:
-* for each lineage `l` in the network, the lineage's rate `r_l` is drawn from
-  `lineage_distribution`, independently across lineages
-Then, the length of each edge in each gene tree is multiplied by `r_l`.
-
-The lineage rates `r_l` are saved as edge lengths in the network, in a new file
-named `scalednetwork_lineagerates.phy` in the same directory as `genefile`
-(see `save_lineagerates` below). `net` is *not* modified.
-
-Output: gene trees, with edge lengths reflecting lineage rate variation,
-(unless lineage_distribution = lognormal_meanone(0.0)),
-without any degree-2 nodes unless `nodemapping=true,` written to `genefile`
-
-# example
-
-```repl
-julia> net, level = simulatenetwork(4; seed=123, levelmax=1, verbose=false);
-
-julia> writeTopology(net, round=true)
-"(t2:0.448,((t1:0.202,#H10:0.0::0.06)I1:0.105,(t4:0.202,(t3:0.202)#H10:0.0::0.94)I2:0.105)I3:0.141)I4;"
-
-julia> Random.seed!(520)
-
-julia> gtrees = simulategenetrees_coalescentunits(net, 3, "trial_genetrees", lineage_distribution = lognormal_meanone(0.1));
-
-julia> writeTopology(gtrees[3], round=true)
-"((t1:0.88,t2:0.928):0.52,t3:1.398,t4:1.444);"
-
-julia> Random.seed!(520)
-
-julia> gtrees = simulategenetrees_coalescentunits(net, 3, "trial_genetrees"; lineage_distribution = lognormal_meanone(0.1), nodemapping=true);
-
-julia> writeTopology(gtrees[3], round=true)
-"(((t2:0.434)I4:0.273,((((t4:0.194)I2:0.09)I3:0.143)I4:0.056,(((t1:0.191)I1:0.106)I3:0.143)I4:0.056):0.217):0.031,((((t3:0.214)H10:0.0)I1:0.106)I3:0.143)I4:0.304);"
-
-```
-"""
-function simulategenetrees_coalescentunits(net, nloci, genefile;
-      lineage_distribution, nodemapping=false, nsites=1)
-    gtcu = genefile * "_coal_unit" # before rate variation
-    treelist = simulatecoalescent(net, nloci, 1; nodemapping=true)
-    writeMultiTopology(treelist, gtcu) # gene trees with lengths in coalescent units
-    length(treelist) == nloci || @warn "unexpected # of gene trees" # sanity check
-    lineage_rate = Dict(e.number => rand(lineage_distribution) for e in net.edge)
-    # add rate for population above the network's root. find its number first.
-    rootedgenumber = max(0, maximum(e.number for e in net.edge)) + 1
-    push!(lineage_rate, rootedgenumber => rand(lineage_distribution))
-    open(genefile, "w") do fout
-        for tree in treelist
-            # add rate variation across lineages
-            for e in tree.edge
-                e.length *= lineage_rate[e.inCycle]
-            end
-            # cleanup gene trees
-            # with PhyloNetworks v0.15: the degree-2 root is removed too, but that's fine for seq-gen
-            nodemapping || PhyloNetworks.removedegree2nodes!(tree)
-            write(fout, "[$nsites]")
-            writeTopology(tree, fout)
-            write(fout, "\n")
-        end
-    end  # close file cleanly
-    netfile = joinpath(dirname(genefile), "scalednetwork_lineagerates.phy")
-    save_lineagerates(net, lineage_rate, netfile) # saved inside edge lengths
-    return treelist
-end
 
 """
     function simulategenetrees(net::HybridNetwork, nloci::Int64, genefile::AbstractString, 
@@ -376,7 +111,7 @@ without any degree-2 nodes unless `nodemapping=true`.
 ```repl
 julia> net, level = simulatenetwork(4; seed=123, levelmax=1, verbose=false);
 
-julia> writeTopology(net, round=true)
+julia> writenewick(net, round=true)
 "(t2:0.448,((t1:0.202,#H10:0.0::0.285)I1:0.105,(t4:0.202,(t3:0.202)#H10:0.0::0.715)I2:0.105)I3:0.141)I4;"
 
 julia> Random.seed!(520)
@@ -386,12 +121,12 @@ julia> Ne = Dict(5  => 1022, 4  => 1366, 6  => 1061, 7  => 1446, 2  => 1152,
 
 julia> gtrees = simulategenetrees(net, 3, "trial_genetrees", 1, Ne, lineage_distribution = lognormal_meanone(0.0), substitutions_pergen = 1.25e-4);
 
-julia> writeTopology(gtrees[3], round=true)
+julia> writenewick(gtrees[3], round=true)
 "((t1:0.006,t3:0.006):0.008,t2:0.014,t4:0.552);"
 
 julia> gtrees = simulategenetrees(net, 3, "trial_genetrees", 2, Ne; lineage_distribution = lognormal_meanone(0.3), nodemapping=true, substitutions_pergen = 1.25e-4);
 
-julia> writeTopology(gtrees[3], round=true)
+julia> writenewick(gtrees[3], round=true)
 "(((t2_2:0.009,t1_1:0.005):0.093,t3_1:0.093):0.45,((((t4_2:0.001,t1_2:0.001):0.004,t2_1:0.006):0.005,t4_1:0.007):0.007,t3_2:0.016):0.534);"
 ```
 """
@@ -408,7 +143,7 @@ function simulategenetrees(net::HybridNetwork, nloci::Int64, genefile::AbstractS
   else
     treelist = simulatecoalescent(net, nloci, nind, popsizes; nodemapping=false)
   end
-  writeMultiTopology(treelist, gtoriginal) # gene trees with lengths in original units
+  writemultinewick(treelist, gtoriginal) # gene trees with lengths in original units
   length(treelist) == nloci || @warn "unexpected # of gene trees" # sanity check
   # simulate a rate for each lineage in the network, including edge above root node
   # the input distribution should have mean 1: no units.
@@ -424,7 +159,7 @@ function simulategenetrees(net::HybridNetwork, nloci::Int64, genefile::AbstractS
     if so, we want to control the total # of generations from the ingroup crown
     to the ingroup taxa to be the same across all generated networks.
     =#
-    tree = majorTree(net)
+    tree = majortree(net)
     outgroups = outgrouplabels(net)
     for taxon in outgroups
         deleteleaf!(tree,taxon)
@@ -438,11 +173,11 @@ function simulategenetrees(net::HybridNetwork, nloci::Int64, genefile::AbstractS
       for tree in treelist
           # add rate variation across lineages, and x substitutions/gen
           for e in tree.edge
-              e.length *= lineage_rate[e.inCycle] * subrate_scaler
+              e.length *= lineage_rate[population_mappedto(e)] * subrate_scaler
           end
           nodemapping || PhyloNetworks.removedegree2nodes!(tree)
           write(fout, "[$nsites]")
-          writeTopology(tree, fout)
+          writenewick(tree, fout)
           write(fout, "\n")
       end
   end
@@ -462,9 +197,9 @@ in two ways, resulting in writing 2 networks:
 function save_lineagerates(net, lineage_rate, netfile)
     netcp = deepcopy(net)
     for e in netcp.edge e.length *= lineage_rate[e.number]; end # rate * length
-    writeTopology(netcp, netfile)
+    writenewick(netcp, netfile)
     for e in netcp.edge e.length  = lineage_rate[e.number]; end # rate itself only
-    writeTopology(netcp, netfile; append=true)
+    writenewick(netcp, netfile; append=true)
     return nothing
 end
 
@@ -693,9 +428,9 @@ function sim_snps(inputgts::AbstractString; nsites::Int64, ntries::Int64,
 end
 
 """
-    outgrouplabels(net::HybridNetwork, directedges=true::Bool;
-                    subtreeroot = net.node[net.root],
-                    ingroup_also = false::Bool)
+    outgrouplabels(net::HybridNetwork, directedges::Bool=true;
+                   subtreeroot = getroot(net),
+                   ingroup_also::Bool = false)
 
 Set of labels for tips in the outgroup, which is chosen to be the
 descendants of the (first) edges of the root with the minimum number
@@ -703,7 +438,7 @@ of descendants.
 
 # example
 ```julia
-julia> net = readTopology("((hg19,ornAna1),(#H9:::0.4,((chrPic0,(allMis0,((galGal3,taeGut1))#H9:::0.6)),(anoCar2,pytMol0))));");
+julia> net = readnewick("((hg19,ornAna1),(#H9:::0.4,((chrPic0,(allMis0,((galGal3,taeGut1))#H9:::0.6)),(anoCar2,pytMol0))));");
 
 julia> outgrouplabels(net)
 Set{String} with 2 elements:
@@ -730,10 +465,13 @@ Set{String} with 1 element:
 
 ```
 """
-function outgrouplabels(net::HybridNetwork, directedges=true::Bool;
-                    subtreeroot::PhyloNetworks.Node = net.node[net.root],
-                    ingroup_also::Bool = false)
-    directedges && directEdges!(net)
+function outgrouplabels(
+    net::HybridNetwork,
+    directedges::Bool=true;
+    subtreeroot::PhyloNetworks.Node = getroot(net),
+    ingroup_also::Bool=false
+)
+    directedges && directedges!(net)
     daughteredges = [e for e in subtreeroot.edge if PhyloNetworks.getParent(e)===subtreeroot]
     length(daughteredges) > 1 || error("the (subnetwork) root has a single daughter")
     if ingroup_also && length(daughteredges)>2
@@ -758,15 +496,15 @@ end
 
 Size of the edge's hardwired cluster (set of descendants).
 
-`edge` should belong in a rooted network for which `isChild1` is up-to-date.
-Run `directEdges!` beforehand on this network.
+`edge` should belong in a rooted network for which `ischild1` is up-to-date.
+Run `directedges!` beforehand on this network.
 This is very important, otherwise one might enter an infinite loop,
 and the function does not test for this.
 
 # example
 
 ```julia
-julia> net = readTopology("((hg19,ornAna1),(#H9:::0.4,((chrPic0,(allMis0,((galGal3,taeGut1))#H9:::0.6)),(anoCar2,pytMol0))));");
+julia> net = readnewick("((hg19,ornAna1),(#H9:::0.4,((chrPic0,(allMis0,((galGal3,taeGut1))#H9:::0.6)),(anoCar2,pytMol0))));");
 
 julia> clustersize(net.edge[3])
 2
@@ -774,7 +512,7 @@ julia> clustersize(net.edge[3])
 julia> clustersize(net.edge[17])
 6
 
-julia> # printEdges(net) # to see the list of edges with their parent & child nodes
+julia> # printedges(net) # to see the list of edges with their parent & child nodes
 ```
 """
 function clustersize(edge::PhyloNetworks.Edge)
@@ -811,7 +549,7 @@ which becomes the population name.
 
 Input: 
     - `ind_names`: vector of strings (individual names). Can be obtained
-      with tipLabels(gt), where gt is a gene tree
+      with tiplabels(gt), where gt is a gene tree
     - `output_ind`: string name/location of output file.
 
 Output: map file with name `output_ind`.
@@ -823,7 +561,6 @@ Output: map file with name `output_ind`.
 """
 
 function make_indfile(ind_names::Vector{String}, output_ind::AbstractString, re= r"_\d+$")
-#fixit just double check this works
     species = Dict()
     for ind in ind_names
         pop = replace(ind, re => "")
@@ -874,7 +611,7 @@ function readmultigts_seqgen(file::AbstractString)
         line = strip(line) # remove spaces
         line = split(line, "]")[2]
         c = isempty(line) ? "" : line[1]
-        if(c == '(') push!(vnet, readTopology(line,false)) end # false for non-verbose
+        if(c == '(') push!(vnet, readnewick(line,false)) end # false for non-verbose
         numl += 1
     end
     close(s)
@@ -930,11 +667,8 @@ function simulate_fromnet_tovcf(net::HybridNetwork; nind::Int,
 
     #get starting datetime
     datetime = Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS")
-
+    #set up string from net name for naming folders
     net_str = netname
-    randomnet = (netname != "fleg")
-    #boolean that's false if netname is "fleg"
-        #true if netname is not "fleg"
 
     #create folder for output if it doesn't exist already
     paramset_dir = parameterset_directory(net_str, nind, ngenes,
@@ -963,7 +697,7 @@ function simulate_fromnet_tovcf(net::HybridNetwork; nind::Int,
         #simulate gts, write to rep_dir folder
         if isfile("$rep_dir/gts_nsubst")
             gts = readmultigts_seqgen("$rep_dir/gts_nsubst")
-            ind_names = tipLabels(gts[1])
+            ind_names = tiplabels(gts[1])
             println(io, "gene trees already exist")
         else
             gts = simulategenetrees(net, ngenes, "$rep_dir/gts", nind, popsizes;
@@ -971,7 +705,7 @@ function simulate_fromnet_tovcf(net::HybridNetwork; nind::Int,
                 nodemapping=false, nsites=nsites,
                 substitutions_pergen = sub_rate,
                 ingroupcrownheight = nothing)
-            ind_names = tipLabels(gts[1])
+            ind_names = tiplabels(gts[1])
             write(io, """
             nind = $nind
             ngenes = $ngenes

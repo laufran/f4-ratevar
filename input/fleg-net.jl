@@ -30,9 +30,9 @@ fleg_str = """
   #H1:23079::0.19[&ghostarchaic]
 ):205260);
 """
-fleg = readTopology(fleg_str)
-fleg.edge[3].isMajor = true # to restore viz in fig2a of Flegontov
-fleg.edge[4].isMajor = false # despite γ = 52% for minor edge
+fleg = readnewick(fleg_str)
+fleg.edge[3].ismajor = true # to restore viz in fig2a of Flegontov
+fleg.edge[4].ismajor = false # despite γ = 52% for minor edge
 #=
 R"pdf"("flegontov2023-fig2a.pdf", height=5, width=8)
 R"par"(mar=[0,0,0,0]);
@@ -94,7 +94,7 @@ removedegree2nodes!(fleg_nobott, true)
 
 #get pruned version of tree to use as starting tree
 fleg_pruned = deepcopy(fleg)
-deleteHybridThreshold!(fleg_pruned, 0.35, true)
+deletehybridthreshold!(fleg_pruned, 0.35, true)
 # nofuse = true: to have same edges as in fleg and re-use flegpopsizes
 
 # remove degree 2 nodes- otherwise keeps nodes from pruned hybrid events, despite removing edges
@@ -103,7 +103,7 @@ removedegree2nodes!(fleg_pruned_nobott, true)
 # PhyloPlots.plot(fleg_pruned, tipoffset=0.1, showedgenumber=true, shownodenumber=true, showgamma=true);
 
 # major tree from Flegontov network
-fleg_major = majorTree(fleg)
+fleg_major = majortree(fleg)
 removedegree2nodes!(fleg_major, true)
 #plot(fleg_major, showedgenumber = true) #confirm bottleneck is removed
 
