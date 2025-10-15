@@ -21,6 +21,7 @@ then in each session:
 options(openalexR.mailto = "cecile.ane@wisc.edu")
 library(openalexR)
 library(dplyr)
+library(lubridate)
 library(ggplot2)
 #citation("openalexR")
 sessionInfo("openalexR")$otherPkgs$openalexR$Version # "2.0.1"
@@ -88,7 +89,6 @@ sciencenature %>% count(source_display_name, sort=T)
 only 3 papers from 2024 and 2 papers from 2025 and nothing after 2025-03,
 so many are missed (like Salem et al. (April 2025, Nature) mentioned above
 under 'limitation'):
-
 ```{r}
 sciencenaturedates = sciencenature %>%
   select(title, publication_date) %>% arrange(desc(publication_date))
@@ -104,6 +104,25 @@ sciencenaturedates %>% head(n=8)
     Unraveling the mitochondrial phylogenetic landscape of Thail… 2023-11-21
     Genetic diversity and ancestry of the Khmuic-speaking ethnic… 2023-09-21
     Northwest African Neolithic initiated by migrants from Iberi… 2023-06-07
+
+In the full list, there are only 2 entries in 2025, 17 in 2024, 32 in 2023.
+```{r}
+res |> mutate(publication_year = year(publication_date)) |>
+    group_by(publication_year) |> count()
+```
+
+    publication_year     n
+                2012     1
+                2016     2
+                2017     4
+                2018    13
+                2019    13
+                2020    22
+                2021    24
+                2022    33
+                2023    32
+                2024    17
+                2025     2
 
 ```{r}
 #| eval: true
