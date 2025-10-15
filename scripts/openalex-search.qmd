@@ -52,6 +52,8 @@ in: article, preprint, or book chapter.
 on their website:
 [here](https://openalex.org/works?page=1&filter=default.search%3A(qpgraph%20AND%20admixtools)%20OR%20find_graphs%20OR%20admixtools2%2Ctype%3Atypes%2Farticle%7Ctypes%2Fpreprint%7Ctypes%2Fbook-chapter)
 
+ran this below on 2025-10-14:
+
 ```{r}
 today <- format(Sys.time(), "%Y%m%d") # "20251014"
 res <- oa_fetch(
@@ -123,6 +125,33 @@ res |> mutate(publication_year = year(publication_date)) |>
                 2023    32
                 2024    17
                 2025     2
+
+for comparison, a google scholar search (on 2025-10-15) for the same keywords
+[search](https://scholar.google.com/scholar?as_ylo=2025&q=(qpgraph+AND+admixtools)+OR+find_graphs+OR+admixtools2)
+finds this number of results:
+
+    year   n total_since
+    2025  36     36
+    2024  47     83
+    2023  47    130
+    2022  51    181
+    2016   3    329
+    2014   1  (supplementary information for Lazaridis et al. (2014 Nature)
+              'Ancient human genomes suggest three ancestral populations for present-day Europeans')
+    2012   1    331
+
+plot the number of results from OpenAlex.
+- downsides: very conservative estimate
+  * probably much so for recent years, due to lack of access to
+    full-text n-grams for papers behind paywalls.
+  * even open-access, some Nature or Science papers do not have 'qpgraph' or
+    'admixtools' or 'find_graph' in their main text: only in their SM
+    (e.g. Lazaridis et al. 2014, Nature)
+- upside:
+  * more accurate filtering to only keep papers and preprints
+    and not reviews, vignettes, etc. that google scholar counts.
+  * more data on each paper, e.g. number of citations, where published etc.
+    and these data can be downloaded.
 
 ```{r}
 #| eval: true
