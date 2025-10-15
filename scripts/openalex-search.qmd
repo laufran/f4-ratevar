@@ -1,0 +1,244 @@
+---
+author: Cécile Ané
+title: "use OpenAlex to document the importance of f4 and D in scientific discovery"
+format: html
+---
+
+## load & setup
+
+do this once:
+```{r}
+#| eval: false
+install.packages("openalexR") # from CRAN
+# install.packages("remotes") # else latest from github
+# remotes::install_github("ropensci/openalexR")
+```
+
+then in each session:
+```{r}
+#| include: false
+#| warning: false
+options(openalexR.mailto = "cecile.ane@wisc.edu")
+library(openalexR)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+#citation("openalexR")
+sessionInfo("openalexR")$otherPkgs$openalexR$Version # "2.0.1"
+```
+
+## limitation: limited full-text access
+
+recent papers without open access don't (all) have n-grams to search
+for terms in their full text.
+
+Example:
+[Salem et al. (April 2025, Nature)](https://doi.org/10.1038/s41586-025-08793-7)
+This paper *is* in OpenAlex: [W4409147937](https://openalex.org/works/w4409147937)
+and its full text has both "admixtools" and "find_graph".
+But an OpenAlex [search](https://openalex.org/works?page=1&filter=ids.openalex:w4409147937,default.search:admixtools)
+requesting this paper + 'admixtools' in the full text finds 0 results, not 1.
+Its [details](https://api.openalex.org/works/W4409147937)
+show `"has_fulltext":false`
+```sh
+curl https://api.openalex.org/works/W4409147937 > W4409147937.json
+grep -Eo "\"has_fulltext\":\w+" W4409147937.json
+```
+
+## v3: search restricted to qpgraph or find_graph
+
+specifically: `(qpgraph AND admixtools) OR find_graphs OR admixtools2`
+in: article, preprint, or book chapter.
+on their website:
+[here](https://openalex.org/works?page=1&filter=default.search%3A(qpgraph%20AND%20admixtools)%20OR%20find_graphs%20OR%20admixtools2%2Ctype%3Atypes%2Farticle%7Ctypes%2Fpreprint%7Ctypes%2Fbook-chapter)
+
+ran this below on 2025-10-14:
+
+```{r}
+today <- format(Sys.time(), "%Y%m%d") # "20251014"
+res <- oa_fetch(
+  entity = "works",
+  fulltext.search = "(qpgraph+admixtools)|find_graphs|admixtools2",
+  from_publication_date = "2000-01-01",
+  options = list(sort = "cited_by_count:desc")
+) |> filter(type %in% c("article", "preprint", "book-chapter"))
+res <- select(res,
+    id, title, cited_by_count, publication_date, source_display_name, type)
+write.csv(res, file=paste0("openalex-admixtools-",today,".csv"))
+dim(res) # 603 rows, 6 columns
+```
+
+```{r}
+sciencenature = res %>% filter(
+  source_display_name %in% c("Science","Scientific Reports",
+    "Nature", "Nature Communications", "Nature Genetics", "Nature Ecology & Evolution"))
+nrow(sciencenature) # 29
+res %>%
+    filter(source_display_name %in% c("Science","Nature")) %>%
+    count(source_display_name)
+# Nature 9, Science 6
+sum(sciencenature$cited_by_count) #  5019
+sciencenature %>% select(title, cited_by_count) %>% head(4)
+sciencenature %>% count(source_display_name, sort=T)
+```
+
+    Nature                         9
+    Scientific Reports             8
+    Science                        6
+    Nature Communications          4
+    Nature Ecology & Evolution     2
+
+only 3 papers from 2024 and 2 papers from 2025 and nothing after 2025-03,
+so many are missed (like Salem et al. (April 2025, Nature) mentioned above
+under 'limitation'):
+```{r}
+sciencenaturedates = sciencenature %>%
+  select(title, publication_date) %>% arrange(desc(publication_date))
+sciencenaturedates %>% head(n=8)
+```
+
+    title                                                         publication_date
+    A reduction in effective population size has not relaxed pur… 2025-01-03
+    High-resolution genomic history of early medieval Europe      2025-01-01
+    BaTwa populations from Zambia retain ancestry of past hunter… 2024-08-24
+    Palaeogenomic insights into the origins of early settlers on… 2024-04-26
+    Introgression and disruption of migration routes have shaped… 2024-04-12
+    Unraveling the mitochondrial phylogenetic landscape of Thail… 2023-11-21
+    Genetic diversity and ancestry of the Khmuic-speaking ethnic… 2023-09-21
+    Northwest African Neolithic initiated by migrants from Iberi… 2023-06-07
+
+In the full list, there are only 2 entries in 2025, 17 in 2024, 32 in 2023.
+```{r}
+res |> mutate(publication_year = year(publication_date)) |>
+    group_by(publication_year) |> count()
+```
+
+    publication_year     n
+                2012     1
+                2016     2
+                2017     4
+                2018    13
+                2019    13
+                2020    22
+                2021    24
+                2022    33
+                2023    32
+                2024    17
+                2025     2
+
+for comparison, a google scholar search (on 2025-10-15) for the same keywords
+[search](https://scholar.google.com/scholar?as_ylo=2025&q=(qpgraph+AND+admixtools)+OR+find_graphs+OR+admixtools2)
+finds this number of results:
+
+    year   n total_since
+    2025  36     36
+    2024  47     83
+    2023  47    130
+    2022  51    181
+    2016   3    329
+    2014   1  (supplementary information for Lazaridis et al. (2014 Nature)
+              'Ancient human genomes suggest three ancestral populations for present-day Europeans')
+    2012   1    331
+
+plot the number of results from OpenAlex.
+- downsides: very conservative estimate
+  * probably much so for recent years, due to lack of access to
+    full-text n-grams for papers behind paywalls.
+  * even open-access, some Nature or Science papers do not have 'qpgraph' or
+    'admixtools' or 'find_graph' in their main text: only in their SM
+    (e.g. Lazaridis et al. 2014, Nature)
+- upside:
+  * more accurate filtering to only keep papers and preprints
+    and not reviews, vignettes, etc. that google scholar counts.
+  * more data on each paper, e.g. number of citations, where published etc.
+    and these data can be downloaded.
+
+```{r}
+#| eval: true
+datebreaks = seq(as.Date("2012-09-01"), as.Date("2025-03-01"), by="quarter")
+p = ggplot(data = select(res, publication_date), # not sciencenature: all
+  aes(x=as.Date(publication_date))) +
+  stat_bin(breaks = datebreaks, closed="left") +
+  scale_x_date(breaks = as.Date(c("2015-01-01","2020-01-01","2025-01-01")), date_labels = "%Y") +
+  ylim(0,NA) +
+  xlab("publication date") +
+  ylab("number of publications") +
+  theme_bw()
+ggsave(filename=paste0("fig-numberpapers-admixtools-",today,".pdf"), plot=p,
+       width=6, height=3, unit="in") # 72 points = 1 inch
+```
+
+## v1: search for 'f4 statistics', 'admixtools' and variants
+
+ran this below on 2025-01-08, again 2025-02-08:
+
+```{r}
+today = format(Sys.time(), "%Y%m%d") # "20250208" # 20250108
+res = oa_fetch(
+  entity = "works",
+  fulltext.search = "admixtools|admixtools2|admixtools%202|f4%20statistics",
+  from_publication_date = "2000-01-01",
+  options = list(sort = "cited_by_count:desc")
+)
+res <- select(res, id, title, cited_by_count, publication_date, so)
+write.csv(res, file=paste0("openalex-admixf4stat-",today,".csv"))
+dim(res) # 603 rows on 2025-01-08, 616 on 2025-02-08
+```
+
+```{r}
+sciencenature = res %>% filter(
+  so %in% c("Science","Scientific Reports", "Nature", "Nature Communications",
+            "Nature Genetics", "Nature Ecology & Evolution"))
+nrow(sciencenature) # 107 on 2025-01-08, 110 on 2025-02-08
+res %>% filter(so %in% c("Science","Nature")) %>% count(so)
+# Nature 23, Science 8 on 2025-01-08, 24+8 on 2025-02-08
+sum(sciencenature$cited_by_count) #  14770 on 2025-02-08
+sciencenature %>% select(title, cited_by_count) %>% head(4)
+sciencenature %>% count(so, sort=T)
+```
+
+                               01-08 02-08
+    Scientific Reports            32    34
+    Nature Communications         31    31
+    Nature                        23    24
+    Science                        8     8
+    Nature Ecology & Evolution     7     7
+    Nature Genetics                6     6
+
+5 papers in 2025-01:
+```{r}
+sciencenaturedates = sciencenature %>%
+  select(title, publication_date) %>% arrange(desc(publication_date))
+sciencenaturedates %>% head(n=8)
+```
+
+    title                                                   publication_date
+    Genomic analysis of three medieval parchments from German mo… 2025-01-25
+    Ancient DNA reveals reproductive barrier despite shared Avar… 2025-01-15
+    The cranium from the Octagon in Ephesos                       2025-01-10
+    A reduction in effective population size has not relaxed pur… 2025-01-03
+    High-resolution genomic history of early medieval Europe      2025-01-01
+    Human migration from the Levant and Arabia into Yemen since … 2024-12-30
+    BaTwa populations from Zambia retain ancestry of past hunter… 2024-08-24
+
+on 2025-01-08: mmanually read all 107 titles to check that the papers are in the
+expected domain (yes they are):
+```{r}
+#| eval: false
+sciencenaturedates$title
+```
+
+```{r}
+#| eval: true
+datebreaks = seq(as.Date("2012-09-01"), as.Date("2025-03-01"), by="quarter")
+p = ggplot(data = select(res, publication_date), # not sciencenature: all journals
+  aes(x=as.Date(publication_date))) +
+  stat_bin(breaks = datebreaks, closed="left") +
+  scale_x_date(breaks = as.Date(c("2015-01-01","2020-01-01","2025-01-01")), date_labels = "%Y") +
+  ylim(0,NA) +
+  xlab("publication date") +
+  ylab("number of publications") +
+  theme_bw()
+ggsave(filename=paste0("fig-numberpapers-admixf4stat-",today,".pdf"), plot=p,
+       width=6, height=3, unit="in") # 72 points = 1 inch
+```
