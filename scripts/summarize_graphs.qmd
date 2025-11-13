@@ -1307,7 +1307,6 @@ wr_filtered = wr %>%
   filter(abs(worstresid) < 3) %>%
   #group by irep + paramid (not h_search!)
   group_by(irep, paramid) %>%
-  #check whether there are any graphs with h_search = 1 
   summarize(lindist = first(lindist),
             nind = first(nind),
             net = first(net),
@@ -1323,7 +1322,6 @@ wr_byirep = wr_byirep %>%
 
 type1_fromwr = wr_byirep  %>%
   group_by(paramid) %>%
-  #check whether there are any graphs with h_search = 1 
   summarize(lindist = first(lindist),
             nind = first(nind),
             net = first(net),
