@@ -151,7 +151,7 @@ Output: each replicate will have 1 log:
   - `topgraphsX-XXX.csv` (first X = h val, XXX = run #): contains cols:
     - `newick`: Newick string for each tree/net
     - `score`: log-likelihood for given tree/net
-    - `hash`: given from `admixtools`, to (maybe) be used to see if topologies are isomorphic
+    - `hash`: given from `admixtools`, to be used to see if topologies are isomorphic
     - `truenet`: boolean (if TRUE: true network est. from `qpgraph`, if FALSE: estimated from 
       `find_graphs`)
     - `net_hwdist`: hardwired cluster distance from true net (0 if net is true net)

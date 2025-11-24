@@ -24,7 +24,7 @@ Install packages within R, locally to `~/R/x86_64-pc-linux-gnu-library/4.5`:
 ### admixtools - done on Franklin
 
 version 2.0.4 git commit a3d1d5b, downloaded as of 2024-5-20. (for g1/g4)
-version 2.X.X. (for g2)
+version 2.0.9 git commit d394bd0 (for additional graphs beyond g1/g4)
 
 ```{r}
 install.packages("devtools") # takes forever!!

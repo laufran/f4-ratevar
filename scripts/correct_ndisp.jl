@@ -4,7 +4,7 @@ near major trees between each top graph and the true graph.
 
 previously, we did not update the `num_nearmajortrees` if the 
 `num_nearmajortrees < 2` initially, before changing the gamma threshold.
-(addition of line 62).
+(addition of line 71).
 
 Workflow:
 - read CSV file with all topgraphs: adjust inputcsv file name below
