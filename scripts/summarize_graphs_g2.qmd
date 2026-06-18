@@ -193,7 +193,7 @@ Alright, now we should have data for the 16 additional topologies,
 and they should be filtered already across runs (excluding duplicates, 
 keeping 5 graphs minimum, or within 10 ll score pts) in each replicate.
 Data is at `nobackup2/lefrankel/f4-ratevar/output/concat_g2topgraphs_filtered.csv`
-and `nobackup2/lefrankel/f4-ratevar/output/g14_bestcase_allnets.csv.csv`
+and `nobackup2/lefrankel/f4-ratevar/output/g14_bestcase_allnets.csv`
 both on franklin01.
 
 Of note, will need to filter incomplete (bonus) `h_search == 2` on g4-lg. 
