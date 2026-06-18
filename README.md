@@ -1,8 +1,8 @@
 # pipeline to study accuracy of admixture graph inference from f4 statistics
 
-Code to reproduce the simulation study in: Frankel & Ané (2025) "Low accuracy of complex admixture graph inference from f-statistics".
+Code to reproduce the simulation study in: Frankel & Ané (2026) "Low accuracy of complex admixture graph inference from f-statistics".
 
-Preprint available here: <https://www.biorxiv.org/content/10.1101/2025.03.07.642126v2>
+Paper available at Genetics: <https://academic.oup.com/genetics/article-abstract/232/1/iyaf259/8363135>
 
 ## goal and model
 
