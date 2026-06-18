@@ -4,10 +4,6 @@ output: html_document
 date: "2023-10-19"
 ---
 
-fixits:
- - make comments for the visualization section
- - fix block quotes for results from R
- 
 ```{r}
 #| code-fold: true
 library("admixtools")
@@ -56,7 +52,7 @@ run these blocks from `franklin00`:
 # this should be only run once
 scp lefrankel@franklin01.stat.wisc.edu:/nobackup2/lefrankel/f4-ratevar/output/concat_topgraphs_all01.csv .
 scp lefrankel@franklin02.stat.wisc.edu:/nobackup2/lefrankel/f4-ratevar/output/concat_topgraphs_all02.csv .
-scp lefrankel@franklin02.stat.wisc.edu:/nobackup2/lefrankel/f4-ratevar/output/concat_topgraphs_all03.csv .
+scp lefrankel@franklin03.stat.wisc.edu:/nobackup2/lefrankel/f4-ratevar/output/concat_topgraphs_all03.csv .
 ```
 
 then in R (after loading in packages at top of file):
@@ -444,6 +440,15 @@ same, only one hash!
 Let's double check if multiple graphs in the same `irun` get a hash match:
 
 ```{r}
+net_matches = concat_topgraphs %>% 
+  group_by(irep, paramid, hash, h_search)  %>%
+  #search for groups that have matches in the hash
+  #only keep groups that have more than 1
+  filter(n() > 1) %>%
+  #then filter that the truenet col has unique > 2
+  #that way get hash matches between true & estimated graphs
+  filter(length(unique(truenet)) == 2)
+
 net_matches %>%
   filter(truenet == FALSE) %>%
   group_by(irep, paramid, h_search, irun) %>%
@@ -478,9 +483,6 @@ groupgraphs_acrossruns = concat_topgraphs %>%
 
 write.csv(groupgraphs_acrossruns, file="topgraphs_filtbyirep.csv", row.names = FALSE)
   
-singlerep = test %>%
-  filter(irep == 1, h_search == 0, paramid == "1-0-10000-1.25e-07-fleg")
-
 summary_ngraphs = groupgraphs_acrossruns %>%
   group_by(irep, paramid, h_search) %>%
   summarize(paramid    = first(paramid),
@@ -1188,7 +1190,7 @@ h4_scorediff = h4_byrep %>%
 
 plot_graphs_point_int(h4_scorediff, yvar = "ninetieth_relativell", 
   ylab = "90th percentile of the score difference between the true network and the best-scoring graph",
-  subtitle = "g4 (true h=1)",
+  subtitle = "g4 (true h=4)",
   seed = 24,
   net = "g4")
 ggsave("figures/scorediff/fig_g4_90thperc-scorediff.pdf", height=8, width=10)
@@ -1381,7 +1383,7 @@ plot_accuracy_2panels = function(dat, ylab, seed){
 }
 
 plot_accuracy_2panels(type1_wr, ylab="proportion incorrectly rejecting h=1", seed=35)
-ggsave("figures/worstresid/fig_wrtype1.pdf", height=5, width=9)
+ggsave("figures/worstresid/fig_g1_wrtype1.pdf", height=5, width=9)
 ```
 
 
@@ -1393,5 +1395,5 @@ g4_type1_wr$mutrate = as.factor(g4_type1_wr$mutrate)
 g4_type1_wr$nbiallelic = as.factor(g4_type1_wr$nbiallelic)
 
 plot_accuracy_2panels(g4_type1_wr, ylab="proportion incorrectly rejecting h=4", seed=35)
-ggsave("figures/worstresid/fig_wrtype1.pdf", height=5, width=9)
+ggsave("figures/worstresid/fig_g4_wrtype1.pdf", height=5, width=9)
 ```
